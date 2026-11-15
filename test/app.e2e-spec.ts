@@ -145,4 +145,21 @@ describe('Inkwell API', () => {
     await http().delete('/me/library/orbita-baja').set('Authorization', `Bearer ${beto}`).expect(204);
     expect((await http().get('/me/library').set('Authorization', `Bearer ${beto}`)).body).toHaveLength(0);
   });
+
+  it('muestra perfiles públicos y las historias propias, y publica la historia con su primer capítulo', async () => {
+    await http().get('/profiles/ana.lee').expect(200).expect({ handle: 'ana.lee', name: 'Ana', bio: 'Leo de noche.' });
+    await http().get('/profiles/nadie').expect(404);
+
+    await http().get('/me/stories').expect(401);
+    const mine = await http().get('/me/stories').set('Authorization', `Bearer ${ana}`).expect(200);
+    expect(mine.body).toHaveLength(3);
+    expect(mine.body.find((s: { slug: string }) => s.slug === 'borrador-secreto')).toMatchObject({ published: false, chapters: 0, totalChapters: 0 });
+    expect(mine.body.find((s: { slug: string }) => s.slug === 'orbita-baja')).toMatchObject({ published: true, chapters: 1, totalChapters: 2 });
+    expect((await http().get('/me/stories').set('Authorization', `Bearer ${beto}`)).body).toHaveLength(0);
+
+    await http().post('/stories/borrador-secreto/chapters').set('Authorization', `Bearer ${ana}`).send({ title: 'Aún en borrador' }).expect(201);
+    await http().get('/stories/borrador-secreto').expect(404);
+    await http().post('/stories/borrador-secreto/chapters').set('Authorization', `Bearer ${ana}`).send({ title: 'Sale a la luz', publish: true }).expect(201);
+    await http().get('/stories/borrador-secreto').expect(200);
+  });
 });

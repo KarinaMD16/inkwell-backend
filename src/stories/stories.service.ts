@@ -26,19 +26,31 @@ export class StoriesService {
     };
   }
 
-  private select() {
+  private columns() {
     const totals = this.counts();
+    return {
+      slug: stories.slug, title: stories.title, author: profiles.handle, tagline: stories.tagline, synopsis: stories.synopsis,
+      cover: stories.coverUrl, color: stories.color, ink: stories.ink, art: stories.art, genre: stories.genre, fandom: stories.fandom,
+      relation: stories.relation, tropes: stories.tropes, warnings: stories.warnings, rating: stories.rating, status: stories.status,
+      format: stories.format, reads: stories.reads, updatedAt: stories.updatedAt,
+      chapters: totals.chapters,
+      votes: totals.votes,
+    };
+  }
+
+  private select() {
+    return this.db.select(this.columns()).from(stories).innerJoin(profiles, eq(stories.authorId, profiles.id));
+  }
+
+  /** Las historias de quien pregunta, publicadas o no, con el total de capítulos contando borradores. */
+  listMine(authorId: string) {
+    const allChapters = this.db.select({ c: count() }).from(chapters).where(eq(chapters.storyId, stories.id));
     return this.db
-      .select({
-        slug: stories.slug, title: stories.title, author: profiles.handle, tagline: stories.tagline, synopsis: stories.synopsis,
-        cover: stories.coverUrl, color: stories.color, ink: stories.ink, art: stories.art, genre: stories.genre, fandom: stories.fandom,
-        relation: stories.relation, tropes: stories.tropes, warnings: stories.warnings, rating: stories.rating, status: stories.status,
-        format: stories.format, reads: stories.reads, updatedAt: stories.updatedAt,
-        chapters: totals.chapters,
-        votes: totals.votes,
-      })
+      .select({ ...this.columns(), published: stories.published, totalChapters: sql<number>`(${allChapters})`.mapWith(Number) })
       .from(stories)
-      .innerJoin(profiles, eq(stories.authorId, profiles.id));
+      .innerJoin(profiles, eq(stories.authorId, profiles.id))
+      .where(eq(stories.authorId, authorId))
+      .orderBy(desc(stories.updatedAt));
   }
 
   async list(query: ListQuery) {
@@ -109,7 +121,8 @@ export class StoriesService {
       .insert(chapters)
       .values({ storyId: story.id, n: last + 1, title: input.title, badge: input.badge, content: input.content, publishedAt: input.publish ? new Date() : null })
       .returning({ n: chapters.n, title: chapters.title, publishedAt: chapters.publishedAt });
-    if (input.publish) await this.db.update(stories).set({ updatedAt: new Date() }).where(eq(stories.id, story.id));
+    // Publicar un capítulo también saca la historia a la luz: sin esto quedaría invisible.
+    if (input.publish) await this.db.update(stories).set({ updatedAt: new Date(), published: true }).where(eq(stories.id, story.id));
     return created;
   }
 
