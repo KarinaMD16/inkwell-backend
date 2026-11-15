@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AuthGuard, CurrentUser } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { ZodPipe } from '../common/zod.pipe.js';
+import { StoriesService } from '../stories/stories.service.js';
 import { MeService } from './me.service.js';
 
 const updateSchema = z.object({
@@ -14,11 +15,20 @@ const updateSchema = z.object({
 @Controller('me')
 @UseGuards(AuthGuard)
 export class MeController {
-  constructor(@Inject(MeService) private readonly me: MeService) {}
+  constructor(
+    @Inject(MeService) private readonly me: MeService,
+    @Inject(StoriesService) private readonly stories: StoriesService,
+  ) {}
 
   @Get()
   get(@CurrentUser() user: AuthUser) {
     return this.me.getOrCreate(user);
+  }
+
+  /** Tus historias, incluidas las que aún no publicaste. */
+  @Get('stories')
+  myStories(@CurrentUser() user: AuthUser) {
+    return this.stories.listMine(user.id);
   }
 
   @Patch()

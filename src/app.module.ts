@@ -5,12 +5,13 @@ import { HealthController } from './health/health.controller.js';
 import { LibraryController } from './library/library.controller.js';
 import { MeController } from './me/me.controller.js';
 import { MeService } from './me/me.service.js';
+import { ProfilesController } from './me/profiles.controller.js';
 import { StoriesController } from './stories/stories.controller.js';
 import { StoriesService } from './stories/stories.service.js';
 
 @Module({
   imports: [DbModule, AuthModule],
-  controllers: [HealthController, MeController, StoriesController, LibraryController],
+  controllers: [HealthController, MeController, ProfilesController, StoriesController, LibraryController],
   providers: [MeService, StoriesService],
 })
 export class AppModule {}

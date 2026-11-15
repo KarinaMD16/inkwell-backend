@@ -42,6 +42,7 @@ Lectura, sin sesión:
 | `GET /stories/:slug` | Ficha de una historia |
 | `GET /stories/:slug/chapters` | Índice de capítulos publicados |
 | `GET /stories/:slug/chapters/:n` | Un capítulo con su contenido |
+| `GET /profiles/:handle` | Perfil público: nombre de usuario, nombre y presentación |
 
 Con sesión (`Authorization: Bearer <access_token de Supabase>`):
 
@@ -49,8 +50,9 @@ Con sesión (`Authorization: Bearer <access_token de Supabase>`):
 |---|---|
 | `GET /me` | Tu perfil; lo crea la primera vez |
 | `PATCH /me` | Cambia `handle`, `name` o `bio` |
+| `GET /me/stories` | Tus historias, publicadas o no, con `published` y `totalChapters` |
 | `POST /stories` | Crea una historia |
-| `POST /stories/:slug/chapters` | Agrega un capítulo (solo quien escribe la historia) |
+| `POST /stories/:slug/chapters` | Agrega un capítulo (solo quien escribe la historia). Con `publish: true` también publica la historia |
 | `PUT` / `DELETE /stories/:slug/chapters/:n/vote` | Vota o quita el voto |
 | `GET /me/library` | Tu repisa |
 | `PUT /me/library/:slug` | Guarda la historia o actualiza el capítulo por el que vas |
