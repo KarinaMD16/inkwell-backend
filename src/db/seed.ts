@@ -9,6 +9,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { loadEnv } from '../config/env.js';
 import * as schema from './schema.js';
+import { saveTags } from '../stories/tagging.js';
 import { chapters, profiles, stories, type Block } from './schema.js';
 
 try {
@@ -53,11 +54,13 @@ for (const [title, slug, author, color, ink, art, genre, tropes, tagline, extra]
   const [profile] = await db.select({ id: profiles.id }).from(profiles).where(eq(profiles.handle, author));
   const [story] = await db
     .insert(stories)
-    .values({ title, slug, authorId: profile.id, color, ink, art, genre, tropes, tagline, synopsis: tagline, published: true, ...extra })
+    .values({ title, slug, authorId: profile.id, color, ink, art, genre, tropes, tagline, synopsis: tagline, published: true, kind: extra?.fandom ? 'Fanfic' : 'Original', ...extra })
     .onConflictDoNothing({ target: stories.slug })
-    .returning({ id: stories.id });
+    .returning();
   if (!story) continue; // ya existía
   created++;
+  // Llena el catálogo de etiquetas y el texto de búsqueda.
+  await db.transaction((tx) => saveTags(tx, story.id, story));
   await db.insert(chapters).values(
     [1, 2, 3].map((n) => ({ storyId: story.id, n, title: `Capítulo ${n}`, content: SAMPLE, publishedAt: new Date() })),
   );

@@ -8,6 +8,20 @@
       "when": 1794755421217,
       "tag": "0000_shiny_triton",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794771543907,
+      "tag": "0001_perfil_completo",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794849749616,
+      "tag": "0002_gestion_y_etiquetas",
+      "breakpoints": true
     }
   ]
 }

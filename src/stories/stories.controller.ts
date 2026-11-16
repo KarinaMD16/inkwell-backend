@@ -16,6 +16,7 @@ export class StoriesController {
   ) {}
 
   // ----- lectura: no pide sesión -----
+  /** Publicadas. Filtros: q, genre, kind, rating, status, author, tags (incluir) y exclude (excluir). */
   @Get()
   list(@Query(new ZodPipe(listSchema)) query: ListQuery) {
     return this.stories.list(query);
