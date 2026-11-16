@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { and, asc, count, desc, eq, exists, gt, ilike, inArray, isNotNull, lte, max, notExists, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, exists, gt, ilike, inArray, isNotNull, isNull, lte, max, notExists, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { fold, slugify } from '../common/slug.js';
 import { DB, type Db } from '../db/db.module.js';
@@ -45,9 +45,17 @@ export class StoriesService {
     return this.db.select({ one: sql`1` }).from(chapters).where(and(eq(chapters.storyId, stories.id), isLive));
   }
 
-  /** Lo que el público puede ver: la autora la publicó y ya tiene algo que leer. */
+  /** La autora tiene la cuenta suspendida. Sirve aunque la consulta no traiga `profiles`. */
+  private authorSuspended() {
+    return this.db.select({ one: sql`1` }).from(profiles).where(and(eq(profiles.id, stories.authorId), isNotNull(profiles.suspendedAt)));
+  }
+
+  /**
+   * Lo que el público puede ver: la autora la publicó y ya tiene algo que leer, moderación no la
+   * retiró y la cuenta de la autora no está suspendida.
+   */
   private visible() {
-    return and(eq(stories.published, true), exists(this.liveOf()));
+    return and(eq(stories.published, true), isNull(stories.removedAt), notExists(this.authorSuspended()), exists(this.liveOf()));
   }
 
   /** Columnas públicas de una historia, con autor, capítulos publicados y votos. */
@@ -124,10 +132,11 @@ export class StoriesService {
     return row;
   }
 
-  /** La historia, solo si su autora la tiene publicada. */
+  /** La historia, solo si su autora la tiene publicada y nada la esconde (retiro o suspensión). */
   private async publicRow(slug: string) {
-    const row = await this.row(slug);
-    if (!row.published) throw new NotFoundException('No encontramos esa historia');
+    const [row] = await this.db.select().from(stories)
+      .where(and(eq(stories.slug, slug), eq(stories.published, true), isNull(stories.removedAt), notExists(this.authorSuspended())));
+    if (!row) throw new NotFoundException('No encontramos esa historia');
     return row;
   }
 
@@ -177,7 +186,11 @@ export class StoriesService {
   listMine(authorId: string) {
     const allChapters = this.db.select({ c: count() }).from(chapters).where(eq(chapters.storyId, stories.id));
     return this.db
-      .select({ ...this.columns(), published: stories.published, totalChapters: sql<number>`(${allChapters})`.mapWith(Number), updatedAt: stories.updatedAt })
+      .select({
+        ...this.columns(), published: stories.published, totalChapters: sql<number>`(${allChapters})`.mapWith(Number), updatedAt: stories.updatedAt,
+        // La autora ve si moderación se la retiró y por qué.
+        removedAt: stories.removedAt, removedReason: stories.removedReason,
+      })
       .from(stories)
       .innerJoin(profiles, eq(stories.authorId, profiles.id))
       .where(eq(stories.authorId, authorId))
@@ -202,6 +215,7 @@ export class StoriesService {
       .orderBy(asc(chapters.n));
     return {
       ...view, published: story.published, totalChapters: list.length, updatedAt: story.updatedAt,
+      removedAt: story.removedAt, removedReason: story.removedReason,
       chapterList: list.map((c) => ({ ...c, state: stateOf(c.publishedAt) })),
     };
   }

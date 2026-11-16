@@ -17,6 +17,11 @@ const schema = z.object({
   SUPABASE_JWT_SECRET: z.string().optional(),
   /** Orígenes del frontend permitidos, separados por coma. */
   CORS_ORIGINS: z.string().default('http://localhost:3000'),
+  /**
+   * Correos que siempre tienen rol admin, separados por coma. Así nace la primera cuenta de
+   * administración sin tocar la base; después se pueden dar roles desde el panel.
+   */
+  ADMIN_EMAILS: blankAsMissing(z.string().default('')),
 
   // Almacenamiento de imágenes (fotos de perfil y portadas), compatible con S3:
   // Supabase Storage ahora, Cloudflare R2 más adelante sin tocar código.

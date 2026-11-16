@@ -1,7 +1,9 @@
 import { ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
+import { adminEmails } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.service.js';
+import { ENV, type Env } from '../config/env.js';
 import { slugify } from '../common/slug.js';
 import { DB, type Db } from '../db/db.module.js';
 import { profiles } from '../db/schema.js';
@@ -19,6 +21,7 @@ export class MeService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(STORAGE) private readonly storage: FileStorage,
+    @Inject(ENV) private readonly env: Env,
   ) {}
 
   /** Lo que ve la propia persona: su perfil completo más el correo de su cuenta (sale del token). */
@@ -35,11 +38,12 @@ export class MeService {
     if (found) return found;
 
     const base = slugify(user.email?.split('@')[0] ?? 'lector').replace(/-/g, '.') || 'lector';
+    const role = user.email && adminEmails(this.env).has(user.email.toLowerCase()) ? 'admin' : 'lector';
     for (let i = 0; i < 5; i++) {
       const handle = i === 0 ? base : `${base}${Math.floor(1000 + Math.random() * 9000)}`;
       const [created] = await this.db
         .insert(profiles)
-        .values({ id: user.id, handle, name: base })
+        .values({ id: user.id, handle, name: base, role })
         .onConflictDoNothing()
         .returning();
       if (created) return created;

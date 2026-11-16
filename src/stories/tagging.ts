@@ -1,7 +1,7 @@
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { fold, slugify } from '../common/slug.js';
 import type { Db } from '../db/db.module.js';
-import { stories, storyTags, tags, type TagKind } from '../db/schema.js';
+import { profiles, stories, storyTags, tags, type TagKind } from '../db/schema.js';
 
 /** Los campos de una historia de los que salen sus etiquetas. */
 export interface Tagged {
@@ -9,7 +9,7 @@ export interface Tagged {
   characters: string[]; tropes: string[]; warnings: string[]; freeTags: string[];
 }
 /** La base o una transacción abierta. */
-export type Tx = Pick<Db, 'select' | 'insert' | 'update' | 'delete'>;
+export type Tx = Pick<Db, 'select' | 'selectDistinct' | 'insert' | 'update' | 'delete' | 'execute'>;
 const key = (kind: string, slug: string) => `${kind}:${slug}`;
 
 /**
@@ -80,12 +80,24 @@ export async function saveTags(tx: Tx, storyId: string, input: Tagged): Promise<
   return saved;
 }
 
-/** Recalcula en cuántas historias visibles se usa cada etiqueta. Llamar cuando una historia cambia de etiquetas o de visibilidad. */
+/**
+ * Recalcula en cuántas historias visibles se usa cada etiqueta. Llamar cuando una historia cambia
+ * de etiquetas o de visibilidad (publicarla, retirarla, suspender a su autora…).
+ */
 export async function recount(tx: Tx, tagIds: string[]) {
   if (!tagIds.length) return;
   await tx.update(tags).set({
-    uses: sql`(select count(*) from ${storyTags} join ${stories} on ${stories.id} = ${storyTags.storyId} where ${storyTags.tagId} = ${tags.id} and ${stories.published})`,
+    uses: sql`(select count(*) from ${storyTags} join ${stories} on ${stories.id} = ${storyTags.storyId}
+      where ${storyTags.tagId} = ${tags.id} and ${stories.published} and ${stories.removedAt} is null
+      and not exists (select 1 from ${profiles} where ${profiles.id} = ${stories.authorId} and ${profiles.suspendedAt} is not null))`,
   }).where(inArray(tags.id, tagIds));
+}
+
+/** Etiquetas de todas las historias de una autora: para recontar al suspenderla o reactivarla. */
+export async function tagIdsOfAuthor(tx: Tx, authorId: string): Promise<string[]> {
+  const rows = await tx.selectDistinct({ id: storyTags.tagId }).from(storyTags)
+    .innerJoin(stories, eq(stories.id, storyTags.storyId)).where(eq(stories.authorId, authorId));
+  return rows.map((r) => r.id);
 }
 
 export async function tagIdsOf(tx: Tx, storyId: string): Promise<string[]> {

@@ -11,6 +11,7 @@ import { ENV, type Env } from '../src/config/env.js';
 import { DB } from '../src/db/db.module.js';
 import * as schema from '../src/db/schema.js';
 import { S3Storage, STORAGE, type FileStorage } from '../src/storage/storage.js';
+import { AUTH_DIRECTORY, type AuthDirectory } from '../src/auth/auth-directory.js';
 import sharp from 'sharp';
 
 // Las pruebas usan un Postgres en memoria (PGlite) con las mismas migraciones,
@@ -19,6 +20,7 @@ const SECRET = 'secreto-de-prueba-con-suficiente-longitud';
 const env: Env = {
   PORT: 0, DATABASE_URL: 'postgres://sin-usar', SUPABASE_URL: 'https://prueba.supabase.co',
   SUPABASE_JWT_SECRET: SECRET, CORS_ORIGINS: 'http://localhost:3000', STORAGE_REGION: 'auto',
+  ADMIN_EMAILS: 'carla@example.com',
 };
 
 /** Almacenamiento en memoria: guarda lo subido para poder revisarlo. */
@@ -33,6 +35,23 @@ class MemoryStorage implements FileStorage {
   }
 }
 const files = new MemoryStorage();
+
+/** Las cuentas de Supabase Auth, en memoria: PGlite no tiene el esquema auth. */
+class MemoryDirectory implements AuthDirectory {
+  readonly emails = new Map<string, string>();
+  readonly deleted: string[] = [];
+  async lookup(ids: string[]) {
+    return new Map(ids.filter((id) => this.emails.has(id)).map((id) => [id, { email: this.emails.get(id)!, lastSignInAt: null }]));
+  }
+  async findByEmail(text: string) {
+    return [...this.emails].filter(([, email]) => email.includes(text.toLowerCase())).map(([id]) => id);
+  }
+  async deleteAccount(_tx: unknown, id: string) {
+    this.deleted.push(id);
+    this.emails.delete(id);
+  }
+}
+const directory = new MemoryDirectory();
 const ANA = '11111111-1111-4111-8111-111111111111';
 const BETO = '22222222-2222-4222-8222-222222222222';
 
@@ -59,6 +78,7 @@ describe('Inkwell API', () => {
       .overrideProvider(ENV).useValue(env)
       .overrideProvider(DB).useValue(db)
       .overrideProvider(STORAGE).useValue(files)
+      .overrideProvider(AUTH_DIRECTORY).useValue(directory)
       .compile();
     app = moduleRef.createNestApplication();
     await app.init();
@@ -423,6 +443,138 @@ describe('Inkwell API', () => {
       const storage = new S3Storage(env);
       await expect(storage.put('x', Buffer.from('x'), 'image/webp')).rejects.toMatchObject({ status: 503 });
       await expect(storage.removeByUrl('https://otro.example/x')).resolves.toBeUndefined();
+    });
+  });
+  describe('gestión de usuarios', () => {
+    const CARLA = '33333333-3333-4333-8333-333333333333';
+    const DANI = '44444444-4444-4444-8444-444444444444';
+    const EVA = '55555555-5555-4555-8555-555555555555';
+    let carla: string;
+    let dani: string;
+    let eva: string;
+    const as = (t: string) => ({ Authorization: `Bearer ${t}` });
+    const slugs = (body: { items: { slug: string }[] }) => body.items.map((x) => x.slug);
+    const uses = async (q: string) => ((await http().get('/tags').query({ q })).body as { uses: number }[])[0]?.uses ?? 0;
+
+    beforeAll(async () => {
+      carla = await token(CARLA, 'carla@example.com');
+      dani = await token(DANI, 'dani@example.com');
+      eva = await token(EVA, 'eva@example.com');
+      for (const [id, email] of [[ANA, 'ana.lee@example.com'], [BETO, 'beto@example.com'], [CARLA, 'carla@example.com'], [DANI, 'dani@example.com'], [EVA, 'eva@example.com']]) {
+        directory.emails.set(id, email);
+      }
+      // Una historia propia para moderar, con una etiqueta que no usa nadie más.
+      await http().post('/stories').set(as(ana)).send({ title: 'Para moderar', genre: 'Drama', tropes: ['Tropo de moderación'] }).expect(201);
+      await http().post('/stories/para-moderar/chapters').set(as(ana)).send({ title: 'Uno', publish: true, content: [{ type: 'p', text: 'Hola.' }] }).expect(201);
+    });
+
+    it('ADMIN_EMAILS da rol admin a su cuenta', async () => {
+      expect((await http().get('/me').set(as(carla)).expect(200)).body).toMatchObject({ role: 'admin', suspendedAt: null });
+      expect((await http().get('/me').set(as(ana))).body.role).toBe('lector');
+    });
+
+    it('el panel pide sesión y al menos rol moderador', async () => {
+      await http().get('/admin/users').expect(401);
+      await http().get('/admin/users').set(as(ana)).expect(403);
+      await http().get('/admin/stories').set(as(ana)).expect(403);
+    });
+
+    it('admin cambia roles, pero no el propio', async () => {
+      await http().patch(`/admin/users/${BETO}/role`).set(as(carla)).send({ role: 'jefa' }).expect(400);
+      const res = await http().patch(`/admin/users/${BETO}/role`).set(as(carla)).send({ role: 'moderador' }).expect(200);
+      expect(res.body).toMatchObject({ handle: expect.any(String), role: 'moderador', email: 'beto@example.com' });
+      await http().patch(`/admin/users/${CARLA}/role`).set(as(carla)).send({ role: 'lector' }).expect(403);
+      // Moderación no da roles.
+      await http().patch(`/admin/users/${ANA}/role`).set(as(beto)).send({ role: 'moderador' }).expect(403);
+    });
+
+    it('lista cuentas con correo y busca por @, nombre o correo', async () => {
+      const all = await http().get('/admin/users').set(as(beto)).expect(200);
+      expect(all.body.total).toBeGreaterThanOrEqual(3);
+      const byEmail = await http().get('/admin/users').query({ q: 'ana.lee@' }).set(as(beto)).expect(200);
+      expect(byEmail.body.items).toEqual([expect.objectContaining({ id: ANA, email: 'ana.lee@example.com', stories: expect.any(Number) })]);
+      const mods = await http().get('/admin/users').query({ role: 'moderador' }).set(as(beto)).expect(200);
+      expect(mods.body.items.map((u: { id: string }) => u.id)).toEqual([BETO]);
+    });
+
+    it('suspender esconde perfil e historias, impide escribir y se puede revertir', async () => {
+      expect(await uses('tropo-de-moderacion')).toBe(1);
+      await http().post(`/admin/users/${ANA}/suspend`).set(as(beto)).send({}).expect(400);
+      const res = await http().post(`/admin/users/${ANA}/suspend`).set(as(beto)).send({ reason: 'Spam en comentarios' }).expect(201);
+      expect(res.body).toMatchObject({ id: ANA, suspendedReason: 'Spam en comentarios', suspendedAt: expect.any(String) });
+
+      await http().get('/profiles/ana.lee').expect(404);
+      await http().get('/stories/para-moderar').expect(404);
+      await http().get('/stories/para-moderar/chapters/1').expect(404);
+      expect(slugs((await http().get('/stories').query({ limit: 50 })).body)).not.toContain('para-moderar');
+      expect(await uses('tropo-de-moderacion')).toBe(0);
+
+      // Puede leer y ver su perfil, no escribir.
+      expect((await http().get('/me').set(as(ana)).expect(200)).body.suspendedReason).toBe('Spam en comentarios');
+      const blocked = await http().post('/stories').set(as(ana)).send({ title: 'No debería', genre: 'Drama' }).expect(403);
+      expect(blocked.body.message).toMatch(/suspendida/);
+      await http().patch('/me').set(as(ana)).send({ bio: 'x' }).expect(403);
+
+      await http().post(`/admin/users/${ANA}/unsuspend`).set(as(beto)).expect(201);
+      await http().get('/profiles/ana.lee').expect(200);
+      await http().get('/stories/para-moderar').expect(200);
+      expect(await uses('tropo-de-moderacion')).toBe(1);
+    });
+
+    it('solo se modera a quien tiene menos permisos, y nunca a una misma', async () => {
+      await http().post(`/admin/users/${CARLA}/suspend`).set(as(beto)).send({ reason: 'Intento' }).expect(403);
+      await http().post(`/admin/users/${BETO}/suspend`).set(as(beto)).send({ reason: 'Intento' }).expect(403);
+      await http().post(`/admin/users/${CARLA}/suspend`).set(as(carla)).send({ reason: 'Intento' }).expect(403);
+      await http().post('/admin/users/no-es-un-id/suspend').set(as(carla)).send({ reason: 'Intento' }).expect(400);
+      await http().post('/admin/users/66666666-6666-4666-8666-666666666666/suspend').set(as(carla)).send({ reason: 'Intento' }).expect(404);
+    });
+
+    it('retirar una historia la esconde del público pero no de su autora', async () => {
+      await http().post('/admin/stories/para-moderar/remove').set(as(beto)).send({ reason: 'Contenido sin advertencias' }).expect(201);
+      await http().get('/stories/para-moderar').expect(404);
+      expect(await uses('tropo-de-moderacion')).toBe(0);
+      const mine = (await http().get('/me/stories').set(as(ana))).body.find((x: { slug: string }) => x.slug === 'para-moderar');
+      expect(mine).toMatchObject({ removedReason: 'Contenido sin advertencias', removedAt: expect.any(String) });
+      const retired = await http().get('/admin/stories').query({ estado: 'retiradas' }).set(as(beto)).expect(200);
+      expect(slugs(retired.body)).toEqual(['para-moderar']);
+
+      await http().post('/admin/stories/para-moderar/restore').set(as(beto)).expect(201);
+      await http().get('/stories/para-moderar').expect(200);
+      expect(await uses('tropo-de-moderacion')).toBe(1);
+      await http().post('/admin/stories/no-existe/remove').set(as(beto)).send({ reason: 'Nada' }).expect(404);
+    });
+
+    it('todo queda en el registro, lo más nuevo primero', async () => {
+      const log = await http().get('/admin/actions').set(as(beto)).expect(200);
+      expect(log.body.map((a: { action: string }) => a.action).slice(0, 5)).toEqual(['restaurar', 'retirar', 'reactivar', 'suspender', 'rol']);
+      expect(log.body[3]).toMatchObject({ actor: expect.stringMatching(/^@/), targetLabel: '@ana.lee', detail: 'Spam en comentarios' });
+    });
+
+    it('descarga una copia de todos tus datos', async () => {
+      const res = await http().get('/me/export').set(as(ana)).expect(200);
+      expect(res.headers['content-disposition']).toMatch(/inkwell-mis-datos\.json/);
+      expect(res.body.cuenta).toEqual({ id: ANA, correo: 'ana.lee@example.com' });
+      const story = res.body.historias.find((x: { slug: string }) => x.slug === 'para-moderar');
+      expect(story.capitulos[0]).toMatchObject({ titulo: 'Uno', contenido: [{ type: 'p', text: 'Hola.' }] });
+    });
+
+    it('borrar la propia cuenta pide confirmar con el @ y se lleva todo', async () => {
+      const me = (await http().get('/me').set(as(dani)).expect(200)).body;
+      await http().post('/stories').set(as(dani)).send({ title: 'De Dani', genre: 'Humor' }).expect(201);
+      await http().delete('/me').set(as(dani)).send({ confirm: 'otra-cosa' }).expect(400);
+      await http().delete('/me').set(as(dani)).send({ confirm: `@${me.handle.toUpperCase()}` }).expect(204);
+      expect(directory.deleted).toContain(DANI);
+      await http().get(`/profiles/${me.handle}`).expect(404);
+      expect((await http().get('/admin/users').query({ q: me.handle }).set(as(carla))).body.items).toEqual([]);
+    });
+
+    it('administración puede borrar cuentas; moderación no', async () => {
+      await http().get('/me').set(as(eva)).expect(200);
+      await http().delete(`/admin/users/${EVA}`).set(as(beto)).expect(403);
+      await http().delete(`/admin/users/${CARLA}`).set(as(carla)).expect(403);
+      await http().delete(`/admin/users/${EVA}`).set(as(carla)).expect(204);
+      expect(directory.deleted).toContain(EVA);
+      expect((await http().get('/admin/actions').set(as(carla))).body[0]).toMatchObject({ action: 'borrar cuenta', targetKind: 'perfil' });
     });
   });
 });

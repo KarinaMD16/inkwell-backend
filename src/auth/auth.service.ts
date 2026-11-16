@@ -1,10 +1,14 @@
 import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { createRemoteJWKSet, decodeProtectedHeader, jwtVerify, type JWTPayload } from 'jose';
 import { ENV, type Env } from '../config/env.js';
+import type { Role } from '../db/schema.js';
 
 export interface AuthUser {
   id: string;
   email: string | null;
+  /** Lo completa AuthGuard con lo guardado en el perfil. */
+  role: Role;
+  suspended: boolean;
 }
 
 /**
@@ -41,6 +45,6 @@ export class AuthService {
       throw new UnauthorizedException('Sesión inválida o vencida');
     }
     if (!payload.sub) throw new UnauthorizedException('Sesión inválida');
-    return { id: payload.sub, email: typeof payload.email === 'string' ? payload.email : null };
+    return { id: payload.sub, email: typeof payload.email === 'string' ? payload.email : null, role: 'lector', suspended: false };
   }
 }

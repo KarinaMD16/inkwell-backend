@@ -30,6 +30,7 @@ Para comprobar que quedó conectada: abre `http://localhost:3001/health`. Debe r
 | `SUPABASE_JWT_SECRET` | Solo si el proyecto usa el secreto heredado (HS256). Con llaves asimétricas va vacío. |
 | `CORS_ORIGINS` | Dominios del frontend, separados por coma. |
 | `PORT` | Puerto local; por defecto 3001. |
+| `ADMIN_EMAILS` | Correos que siempre tienen rol admin, separados por coma. Así nace la primera cuenta de administración; los demás roles se dan desde el panel. |
 | `STORAGE_*` | Almacenamiento de imágenes compatible con S3. Ver **Imágenes** más abajo. Opcionales: sin ellas, solo la subida de imágenes responde 503. |
 
 ## Endpoints
@@ -55,6 +56,8 @@ Con sesión (`Authorization: Bearer <access_token de Supabase>`):
 | `PUT /me/avatar` | Sube la foto de perfil (`multipart/form-data`, campo `file`, máx. 8 MB). Queda en 400×400 WebP |
 | `PUT /me/banner` | Sube la portada del perfil. Queda en 1500×500 WebP |
 | `DELETE /me/avatar` · `DELETE /me/banner` | Quita la imagen y la borra del almacenamiento |
+| `GET /me/export` | Descarga una copia de todos tus datos (JSON): perfil, historias con sus capítulos, repisa y votos |
+| `DELETE /me` | Borra tu cuenta para siempre, con todo lo suyo y la cuenta de Supabase Auth. Pide `confirm` con tu nombre de usuario. Funciona aunque la cuenta esté suspendida |
 | `GET /me/stories` | Tus historias, publicadas o no, con `published` y `totalChapters` |
 | `POST /stories` | Crea una historia (nace como borrador) |
 | `GET /me/stories/:slug` | La ficha completa y todos sus capítulos (`chapterList`), cada uno con `state`: `borrador`, `programado` o `publicado` |
@@ -70,6 +73,28 @@ Con sesión (`Authorization: Bearer <access_token de Supabase>`):
 | `GET /me/library` | Tu repisa |
 | `PUT /me/library/:slug` | Guarda la historia o actualiza el capítulo por el que vas |
 | `DELETE /me/library/:slug` | La quita de la repisa |
+
+## Moderación y administración
+
+Roles, de menos a más: `lector`, `moderador`, `admin`. Una cuenta suspendida puede leer, ver su perfil,
+descargar sus datos y borrarse, pero no escribir; su perfil y sus historias dejan de verse. Una historia
+retirada por moderación deja de verse, pero su autora la sigue viendo con el motivo.
+
+Reglas: nadie se modera ni se cambia el rol a sí mismo, y solo se modera a quien tiene menos permisos
+(moderación a quien lee; administración también a moderación). Todo cambio queda en `admin_actions`.
+
+| Método y ruta | Rol | Qué hace |
+|---|---|---|
+| `GET /admin/users` | moderador | Cuentas con rol, estado, correo y último acceso. Admite `q` (@, nombre o correo), `role`, `estado` (`activas`, `suspendidas`), `limit`, `offset` |
+| `POST /admin/users/:id/suspend` · `unsuspend` | moderador | Suspende (con `reason`) o reactiva |
+| `PATCH /admin/users/:id/role` | admin | Cambia el rol (`role`) |
+| `DELETE /admin/users/:id` | admin | Borra la cuenta con todo lo suyo |
+| `GET /admin/stories` | moderador | Todas las historias. Admite `q`, `estado` (`visibles`, `retiradas`) |
+| `POST /admin/stories/:slug/remove` · `restore` | moderador | Retira (con `reason`) o restaura |
+| `GET /admin/actions` | moderador | El registro de acciones, lo más nuevo primero |
+
+El correo y el último acceso salen de `auth.users` de Supabase, y borrar una cuenta borra su fila ahí:
+el rol con el que la API se conecta a Postgres puede hacerlo, así que no hace falta la llave secreta.
 
 ## Base de datos
 
