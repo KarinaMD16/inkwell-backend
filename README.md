@@ -12,7 +12,7 @@ npm install
 cp .env.example .env     # en Windows: copy .env.example .env
 # completa .env con los datos de tu proyecto Supabase (ver abajo)
 npm run db:migrate       # crea las tablas
-npm run db:seed          # opcional: carga las 12 historias de muestra
+npm run db:limpiar-muestra  # borra los datos del antiguo seed (agrega -- --borrar para confirmar)
 npm run start:dev        # http://localhost:3001
 ```
 
