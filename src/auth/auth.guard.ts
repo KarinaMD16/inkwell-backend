@@ -1,54 +1,57 @@
 import {
-  CanActivate, createParamDecorator, ExecutionContext, ForbiddenException, Inject, Injectable, SetMetadata, UnauthorizedException,
+  CanActivate, createParamDecorator, ExecutionContext, ForbiddenException, Inject, Injectable, UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { eq } from 'drizzle-orm';
 import type { Request } from 'express';
 import { ENV, type Env } from '../config/env.js';
-import { DB, type Db } from '../db/db.module.js';
-import { profiles, ROLES, type Role } from '../db/schema.js';
 import { AuthService, type AuthUser } from './auth.service.js';
 
 type AuthedRequest = Request & { user?: AuthUser };
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 function bearer(req: Request): string | null {
   const header = req.headers.authorization;
   return header?.startsWith('Bearer ') ? header.slice(7) : null;
 }
 
-/** Cuánto puede un rol: sirve para comparar ("al menos moderador"). */
-export const rank = (role: Role) => ROLES.indexOf(role);
-
-/** Correos de ADMIN_EMAILS, en minúsculas. */
-export function adminEmails(env: Env): Set<string> {
-  return new Set(env.ADMIN_EMAILS.split(',').map((e) => e.trim().toLowerCase()).filter(Boolean));
+/** Lee una cookie sin dependencias: "a=1; ink_at=xyz" → "xyz". */
+export function cookie(req: Request, name: string): string | null {
+  for (const part of (req.headers.cookie ?? '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return null;
 }
 
-const MIN_ROLE = 'inkwell:min-role';
-/** La ruta pide al menos este rol. Va junto con AuthGuard. */
-export const MinRole = (role: Role) => SetMetadata(MIN_ROLE, role);
-
 /**
- * Exige sesión: sin token válido responde 401. También carga el rol y si la cuenta está
- * suspendida: una cuenta suspendida solo puede leer, ver su perfil, descargar sus datos o borrarse.
- * Con @MinRole, además exige ese rol.
+ * Exige sesión: sin token válido responde 401.
+ * - La web manda la sesión en una cookie HttpOnly (el código de la página no puede leerla).
+ * - La app nativa la manda en `Authorization: Bearer`.
+ * Con cookie, una petición que cambia datos solo se acepta si viene de un origen de Inkwell:
+ * así otro sitio no puede usar la sesión de alguien sin que lo sepa (CSRF).
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
-  private readonly admins: Set<string>;
+  private readonly origins: Set<string>;
 
   constructor(
     @Inject(AuthService) private readonly auth: AuthService,
-    @Inject(DB) private readonly db: Db,
-    @Inject(Reflector) private readonly reflector: Reflector,
-    @Inject(ENV) env: Env,
+    @Inject(ENV) private readonly env: Env,
   ) {
-    this.admins = adminEmails(env);
+    this.origins = new Set(env.CORS_ORIGINS.split(',').map((o) => o.trim()));
   }
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest<AuthedRequest>();
-    const token = bearer(req);
+    let token = bearer(req);
+    if (!token) {
+      token = cookie(req, this.env.AUTH_COOKIE);
+      if (token && !SAFE_METHODS.has(req.method) && !this.origins.has(String(req.headers.origin ?? ''))) {
+        throw new ForbiddenException('Esta acción solo se puede hacer desde Inkwell.');
+      }
+    }
     if (!token) throw new UnauthorizedException('Falta la sesión');
     const user = await this.auth.verify(token);
 

@@ -1,5 +1,5 @@
-import { BadRequestException, Body, Controller, Delete, Get, Header, HttpCode, Inject, Patch, Put, UploadedFile, UseGuards } from '@nestjs/common';
-import { z } from 'zod';
+import { Body, Controller, Delete, Get, HttpCode, Inject, Patch, Put, UploadedFile, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthGuard, CurrentUser } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { ZodPipe } from '../common/zod.pipe.js';
@@ -9,7 +9,8 @@ import { AccountsService } from './accounts.service.js';
 import { MeService } from './me.service.js';
 import { updateProfileSchema, type ProfilePatch } from './profile.schemas.js';
 
-const confirmSchema = z.object({ confirm: z.string().max(40) });
+/** Cambios de cuenta y subidas: pocos por minuto bastan para una persona y frenan a un bot. */
+const SENSITIVE = { default: { limit: 20, ttl: 60_000 } };
 
 @Controller('me')
 @UseGuards(AuthGuard)
@@ -48,21 +49,32 @@ export class MeController {
   }
 
   @Patch()
+  @Throttle(SENSITIVE)
   async update(@CurrentUser() user: AuthUser, @Body(new ZodPipe(updateProfileSchema)) body: ProfilePatch) {
     return this.me.view(await this.me.update(user, body), user);
   }
 
   // Fotos: multipart/form-data con el archivo en el campo "file".
   @Put('avatar')
+  @Throttle(SENSITIVE)
   @upload()
   async setAvatar(@CurrentUser() user: AuthUser, @UploadedFile() file?: UploadedImage) {
     return this.image(user, 'avatar', file);
   }
 
   @Put('banner')
+  @Throttle(SENSITIVE)
   @upload()
   async setBanner(@CurrentUser() user: AuthUser, @UploadedFile() file?: UploadedImage) {
     return this.image(user, 'banner', file);
+  }
+
+  /** Elimina tu cuenta y todo lo tuyo. Pide haberte identificado hace menos de 10 minutos. */
+  @Delete()
+  @HttpCode(204)
+  @Throttle({ default: { limit: 5, ttl: 60 * 60_000 } })
+  async remove(@CurrentUser() user: AuthUser) {
+    await this.me.deleteAccount(user);
   }
 
   @Delete('avatar')

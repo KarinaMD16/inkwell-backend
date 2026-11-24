@@ -1,4 +1,4 @@
-import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { createRemoteJWKSet, decodeProtectedHeader, jwtVerify, type JWTPayload } from 'jose';
 import { ENV, type Env } from '../config/env.js';
 import type { Role } from '../db/schema.js';
@@ -6,9 +6,13 @@ import type { Role } from '../db/schema.js';
 export interface AuthUser {
   id: string;
   email: string | null;
-  /** Lo completa AuthGuard con lo guardado en el perfil. */
-  role: Role;
-  suspended: boolean;
+  /**
+   * Lo que la persona escribió al registrarse con correo (Supabase lo guarda en user_metadata).
+   * Solo se usa una vez, al crear su perfil, y se valida igual que cualquier otro dato.
+   */
+  signup: { handle?: unknown; birthdate?: unknown };
+  /** Cuándo se identificó por última vez de verdad (contraseña, Google, enlace), en segundos. Renovar la sesión no lo cambia. */
+  authTime: number;
 }
 
 /**
@@ -17,6 +21,16 @@ export interface AuthUser {
  *   del proyecto, que se descargan una vez y quedan en memoria.
  * - Proyectos con el secreto heredado (HS256): se valida con SUPABASE_JWT_SECRET.
  */
+/**
+ * Supabase anota en `amr` cada forma en que la persona se identificó, con su hora. Al renovar la
+ * sesión esas horas no cambian: así se distingue "entró hace un rato" de "su sesión sigue viva".
+ */
+function authTime(payload: JWTPayload): number {
+  const amr = Array.isArray(payload.amr) ? (payload.amr as { timestamp?: unknown }[]) : [];
+  const times = amr.map((m) => Number(m?.timestamp)).filter(Number.isFinite);
+  return times.length ? Math.max(...times) : 0;
+}
+
 @Injectable()
 export class AuthService {
   private readonly issuer: string;
@@ -45,6 +59,17 @@ export class AuthService {
       throw new UnauthorizedException('Sesión inválida o vencida');
     }
     if (!payload.sub) throw new UnauthorizedException('Sesión inválida');
-    return { id: payload.sub, email: typeof payload.email === 'string' ? payload.email : null, role: 'lector', suspended: false };
+    const meta = (payload.user_metadata ?? {}) as Record<string, unknown>;
+    // Sin correo confirmado no se usa la cuenta (regla 19). Supabase ya no da sesión a quien no
+    // confirmó si la confirmación está activada; esto es la segunda capa por si se desactiva.
+    if (payload.is_anonymous === true || meta.email_verified === false) {
+      throw new ForbiddenException('Confirma tu correo para usar tu cuenta: abre el enlace que te enviamos.');
+    }
+    return {
+      id: payload.sub,
+      email: typeof payload.email === 'string' ? payload.email : null,
+      signup: { handle: meta.handle, birthdate: meta.birthdate },
+      authTime: authTime(payload),
+    };
   }
 }

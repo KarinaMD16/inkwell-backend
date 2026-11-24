@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, HttpCode, Inject, Param, ParseUUIDPipe, Patch, Post, Put, UploadedFile, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthGuard, CurrentUser } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { ZodPipe } from '../common/zod.pipe.js';
@@ -45,6 +46,7 @@ export class MyStoriesController {
   }
 
   @Put(':slug/cover')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @upload()
   setCover(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @UploadedFile() file?: UploadedImage) {
     return this.stories.setCover(user.id, slug, need(file));

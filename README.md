@@ -5,6 +5,16 @@ Backend de Inkwell: NestJS + Postgres de Supabase (con Drizzle) y sesiones de Su
 Todas las escrituras pasan por esta API. La base tiene RLS activado y sin políticas, así que la
 API de datos de Supabase no puede leer ni escribir nada por su cuenta: es la segunda capa de protección.
 
+## Antes de trabajar
+
+Lean estos archivos; aplican a todo cambio (también los usa Claude, desde `CLAUDE.md`):
+
+- `CLAUDE.md`: las reglas que aplican a este repositorio.
+- `docs/reglas-de-trabajo.md`: todas las reglas de trabajo y seguridad del proyecto.
+- `docs/inkwell-contexto.md`: qué es Inkwell, el MVP y la arquitectura.
+- `docs/inkwell-escritura.md`: flujo de escritura y modelo de datos.
+- `docs/inkwell-pendientes.md`: lo que falta, ordenado por bloque.
+
 ## Puesta en marcha
 
 ```bash
@@ -12,7 +22,7 @@ npm install
 cp .env.example .env     # en Windows: copy .env.example .env
 # completa .env con los datos de tu proyecto Supabase (ver abajo)
 npm run db:migrate       # crea las tablas
-npm run db:seed          # opcional: carga las 12 historias de muestra
+npm run db:limpiar-muestra  # borra los datos del antiguo seed (agrega -- --borrar para confirmar)
 npm run start:dev        # http://localhost:3001
 ```
 
@@ -28,7 +38,11 @@ Para comprobar que quedó conectada: abre `http://localhost:3001/health`. Debe r
 | `DATABASE_URL` | Supabase → **Connect** → **Session pooler**. Cambia `[YOUR-PASSWORD]` por la contraseña de la base. |
 | `SUPABASE_URL` | Supabase → **Project Settings** → **API** → Project URL. |
 | `SUPABASE_JWT_SECRET` | Solo si el proyecto usa el secreto heredado (HS256). Con llaves asimétricas va vacío. |
-| `CORS_ORIGINS` | Dominios del frontend, separados por coma. |
+| `CORS_ORIGINS` | Dominios del frontend, separados por coma. Nunca `*`: la sesión viaja en una cookie. |
+| `AUTH_COOKIE` | Nombre de la cookie HttpOnly de sesión (por defecto `ink_at`). El mismo del frontend. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase → **Project Settings** → **API** → `service_role`. Secreta: solo para eliminar cuentas. Sin ella, `DELETE /me` responde 503. |
+| `TRUST_PROXY` | Proxies delante de la API (Render: `1`), para que el límite de peticiones vea la IP real. |
+| `RATE_LIMIT_PER_MINUTE` | Peticiones por minuto por IP (300). Cambios de cuenta y subidas: 20; eliminar cuenta: 5 por hora. |
 | `PORT` | Puerto local; por defecto 3001. |
 | `ADMIN_EMAILS` | Correos que siempre tienen rol admin, separados por coma. Así nace la primera cuenta de administración; los demás roles se dan desde el panel. |
 | `STORAGE_*` | Almacenamiento de imágenes compatible con S3. Ver **Imágenes** más abajo. Opcionales: sin ellas, solo la subida de imágenes responde 503. |
@@ -47,17 +61,16 @@ Lectura, sin sesión:
 | `GET /tags` | Autocompletar etiquetas de historias visibles. Admite `q`, `kind` (`fandom`, `personaje`, `relacion`, `tropo`, `advertencia`, `libre`), `limit` |
 | `GET /profiles/:handle` | Perfil público: `handle`, `name`, `bio`, `link`, `avatarUrl`, `bannerUrl`, `createdAt`. Nunca el correo ni la fecha de nacimiento |
 
-Con sesión (`Authorization: Bearer <access_token de Supabase>`):
+Con sesión: la web la manda en la cookie HttpOnly `ink_at` (y entonces los cambios solo se aceptan desde un origen de `CORS_ORIGINS`); la app nativa, en `Authorization: Bearer <access_token de Supabase>`. Se rechazan cuentas sin correo confirmado.
 
 | Método y ruta | Qué hace |
 |---|---|
-| `GET /me` | Tu perfil completo, con `email` (sale del token) y `birthdate`; lo crea la primera vez |
-| `PATCH /me` | Cambia `handle`, `name`, `bio` (300), `link` (http/https; sin protocolo se agrega `https://`; `""` lo quita) o `birthdate` (`AAAA-MM-DD`, mínimo 13 años) |
+| `GET /me` | Tu perfil completo, con `email` (sale del token) y `birthdate`. Lo crea la primera vez con el nombre y la fecha elegidos al registrarse (si el nombre no sirve, da uno provisional `lector.NNNNNN`) |
+| `PATCH /me` | Cambia `handle`, `name`, `bio` (300), `link` (http/https; sin protocolo se agrega `https://`; `""` lo quita) o `birthdate` (`AAAA-MM-DD`, mínimo 13 años; se pone una sola vez y después responde 409). Nombres reservados (`admin`, `soporte`, `inkwell`…) no se aceptan |
 | `PUT /me/avatar` | Sube la foto de perfil (`multipart/form-data`, campo `file`, máx. 8 MB). Queda en 400×400 WebP |
 | `PUT /me/banner` | Sube la portada del perfil. Queda en 1500×500 WebP |
 | `DELETE /me/avatar` · `DELETE /me/banner` | Quita la imagen y la borra del almacenamiento |
-| `GET /me/export` | Descarga una copia de todos tus datos (JSON): perfil, historias con sus capítulos, repisa y votos |
-| `DELETE /me` | Borra tu cuenta para siempre, con todo lo suyo y la cuenta de Supabase Auth. Pide `confirm` con tu nombre de usuario. Funciona aunque la cuenta esté suspendida |
+| `DELETE /me` | Elimina la cuenta y todo lo suyo (perfil, historias, votos, repisa, imágenes y la cuenta de Supabase). Pide haberse identificado hace menos de 10 min; si no, 403 con `code: "reauth"` |
 | `GET /me/stories` | Tus historias, publicadas o no, con `published` y `totalChapters` |
 | `POST /stories` | Crea una historia (nace como borrador) |
 | `GET /me/stories/:slug` | La ficha completa y todos sus capítulos (`chapterList`), cada uno con `state`: `borrador`, `programado` o `publicado` |
