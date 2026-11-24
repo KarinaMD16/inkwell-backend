@@ -5,6 +5,16 @@ Backend de Inkwell: NestJS + Postgres de Supabase (con Drizzle) y sesiones de Su
 Todas las escrituras pasan por esta API. La base tiene RLS activado y sin políticas, así que la
 API de datos de Supabase no puede leer ni escribir nada por su cuenta: es la segunda capa de protección.
 
+## Antes de trabajar
+
+Lean estos archivos; aplican a todo cambio (también los usa Claude, desde `CLAUDE.md`):
+
+- `CLAUDE.md`: las reglas que aplican a este repositorio.
+- `docs/reglas-de-trabajo.md`: todas las reglas de trabajo y seguridad del proyecto.
+- `docs/inkwell-contexto.md`: qué es Inkwell, el MVP y la arquitectura.
+- `docs/inkwell-escritura.md`: flujo de escritura y modelo de datos.
+- `docs/inkwell-pendientes.md`: lo que falta, ordenado por bloque.
+
 ## Puesta en marcha
 
 ```bash

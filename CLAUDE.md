@@ -2,7 +2,7 @@
 
 @AGENTS.md
 
-Reglas de trabajo de este repositorio. Se aplican a todo cambio. Contexto del producto: docs `claude/inkwell-contexto.md` y `claude/inkwell-escritura.md` del Project de Claude.
+Reglas de trabajo de este repositorio. Se aplican a todo cambio. Contexto del producto: `docs/inkwell-contexto.md` y `docs/inkwell-escritura.md`. Reglas completas: `docs/reglas-de-trabajo.md`. Pendientes por bloque: `docs/inkwell-pendientes.md`.
 
 ## Backend
 
@@ -27,7 +27,7 @@ Reglas de trabajo de este repositorio. Se aplican a todo cambio. Contexto del pr
 
 ## Seguridad
 
-La numeración es la misma del doc `claude/reglas-de-trabajo.md`; aquí solo van las que aplican a este repositorio.
+La numeración es la misma de `docs/reglas-de-trabajo.md`; aquí solo van las que aplican a este repositorio.
 
 ### Seguridad: generales
 
