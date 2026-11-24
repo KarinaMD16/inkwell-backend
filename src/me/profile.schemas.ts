@@ -33,23 +33,41 @@ const link = z.preprocess(
     .nullable(),
 );
 
-const birthdate = z
+export const birthdateSchema = z
   .string()
   .refine((v) => ageFrom(v) !== null, 'Esa fecha no existe')
   .refine((v) => (ageFrom(v) ?? 0) >= 0, 'Esa fecha todavía no llega')
   .refine((v) => (ageFrom(v) ?? 0) <= 120, 'Revisa el año')
-  .refine((v) => (ageFrom(v) ?? MIN_AGE) >= MIN_AGE, `Necesitas tener al menos ${MIN_AGE} años`)
-  .nullable();
+  .refine((v) => (ageFrom(v) ?? MIN_AGE) >= MIN_AGE, `Necesitas tener al menos ${MIN_AGE} años`);
+
+/**
+ * Nombres que nadie puede tomar: evitan que alguien se haga pasar por el equipo o por una página
+ * de la app. Se compara sin puntos ni guiones bajos ("a.d.m.i.n" también cuenta).
+ * El frontend tiene la misma lista (src/lib/validation.ts): si cambias una, cambia la otra.
+ */
+export const RESERVED_HANDLES = [
+  'admin', 'administrador', 'administracion', 'root', 'sistema', 'system', 'staff', 'equipo', 'oficial',
+  'inkwell', 'koral', 'koralstudio', 'soporte', 'support', 'ayuda', 'help', 'moderacion', 'moderador', 'mod', 'mods',
+  'seguridad', 'security', 'contacto', 'noreply', 'api', 'www',
+  'entrar', 'registro', 'recuperar', 'bienvenida', 'ajustes', 'perfil', 'explorar', 'biblioteca', 'escribir', 'editor',
+  'leer', 'historia', 'novedades', 'privacidad', 'terminos', 'null', 'undefined',
+];
+const RESERVED = new Set(RESERVED_HANDLES);
+export const isReservedHandle = (handle: string) => RESERVED.has(handle.replace(/[._]/g, ''));
+
+export const handleSchema = z.string().trim().toLowerCase()
+  .min(3, 'Usa al menos 3 caracteres').max(24, 'Usa 24 caracteres como máximo')
+  .regex(/^[a-z0-9._]+$/, 'Solo letras, números, punto y guion bajo, sin espacios')
+  .refine((h) => !isReservedHandle(h), 'Ese nombre de usuario está reservado. Prueba con otro');
 
 export const updateProfileSchema = z
   .object({
-    handle: z.string().trim().toLowerCase()
-      .min(3, 'Usa al menos 3 caracteres').max(24, 'Usa 24 caracteres como máximo')
-      .regex(/^[a-z0-9._]+$/, 'Solo letras, números, punto y guion bajo, sin espacios'),
+    handle: handleSchema,
     name: z.string().trim().min(1, 'Escribe tu nombre').max(60, 'Usa 60 caracteres como máximo'),
     bio: z.string().trim().max(300, 'La descripción admite hasta 300 caracteres'),
     link,
-    birthdate,
+    /** Se pone una sola vez (ver MeService.update): después ya no cambia. */
+    birthdate: birthdateSchema,
   })
   .partial()
   .strict();

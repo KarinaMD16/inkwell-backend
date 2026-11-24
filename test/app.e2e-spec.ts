@@ -11,6 +11,7 @@ import { ENV, type Env } from '../src/config/env.js';
 import { DB } from '../src/db/db.module.js';
 import * as schema from '../src/db/schema.js';
 import { S3Storage, STORAGE, type FileStorage } from '../src/storage/storage.js';
+import { ACCOUNT_ADMIN, type AccountAdmin } from '../src/auth/auth-admin.js';
 import sharp from 'sharp';
 
 // Las pruebas usan un Postgres en memoria (PGlite) con las mismas migraciones,
@@ -19,6 +20,7 @@ const SECRET = 'secreto-de-prueba-con-suficiente-longitud';
 const env: Env = {
   PORT: 0, DATABASE_URL: 'postgres://sin-usar', SUPABASE_URL: 'https://prueba.supabase.co',
   SUPABASE_JWT_SECRET: SECRET, CORS_ORIGINS: 'http://localhost:3000', STORAGE_REGION: 'auto',
+  AUTH_COOKIE: 'ink_at', TRUST_PROXY: 0, RATE_LIMIT_PER_MINUTE: 300,
 };
 
 /** Almacenamiento en memoria: guarda lo subido para poder revisarlo. */
@@ -33,11 +35,20 @@ class MemoryStorage implements FileStorage {
   }
 }
 const files = new MemoryStorage();
+/** Cuentas de Supabase borradas en las pruebas. */
+const deletedAccounts: string[] = [];
+const accountAdmin: AccountAdmin = { deleteUser: async (id) => { deletedAccounts.push(id); } };
 const ANA = '11111111-1111-4111-8111-111111111111';
 const BETO = '22222222-2222-4222-8222-222222222222';
 
-function token(sub: string, email: string, opts: { issuer?: string; secret?: string } = {}) {
-  return new SignJWT({ email, role: 'authenticated' })
+const CARLA = '33333333-3333-4333-8333-333333333333';
+const DANI = '44444444-4444-4444-8444-444444444444';
+
+/** Como un token de Supabase: `meta` es el user_metadata (lo que se escribió al registrarse). */
+function token(sub: string, email: string, opts: { issuer?: string; secret?: string; meta?: Record<string, unknown>; anonymous?: boolean; authAgo?: number } = {}) {
+  // `amr`: cuándo se identificó de verdad (por defecto, ahora).
+  const amr = [{ method: 'password', timestamp: Math.floor(Date.now() / 1000) - (opts.authAgo ?? 0) }];
+  return new SignJWT({ email, role: 'authenticated', amr, user_metadata: { email_verified: true, ...opts.meta }, is_anonymous: opts.anonymous ?? false })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(sub)
     .setIssuer(opts.issuer ?? 'https://prueba.supabase.co/auth/v1')
@@ -59,10 +70,12 @@ describe('Inkwell API', () => {
       .overrideProvider(ENV).useValue(env)
       .overrideProvider(DB).useValue(db)
       .overrideProvider(STORAGE).useValue(files)
+      .overrideProvider(ACCOUNT_ADMIN).useValue(accountAdmin)
       .compile();
     app = moduleRef.createNestApplication();
     await app.init();
-    ana = await token(ANA, 'ana.lee@example.com');
+    // Ana se registró con correo y eligió su nombre; su fecha de nacimiento la completa después.
+    ana = await token(ANA, 'ana.lee@example.com', { meta: { handle: 'ana.lee' } });
     beto = await token(BETO, 'beto@example.com');
   });
   afterAll(async () => {
@@ -335,6 +348,81 @@ describe('Inkwell API', () => {
     });
   });
 
+  describe('cuentas', () => {
+    it('crea el perfil con el nombre y la fecha que se eligieron al registrarse', async () => {
+      const carla = await token(CARLA, 'carla@example.com', { meta: { handle: 'Carla.Escribe', birthdate: '2008-03-14' } });
+      const me = await http().get('/me').set('Authorization', `Bearer ${carla}`).expect(200);
+      expect(me.body).toMatchObject({ handle: 'carla.escribe', birthdate: '2008-03-14' });
+    });
+
+    it('nunca saca el nombre de usuario del correo, y no usa nombres reservados ni ocupados', async () => {
+      const me = await http().get('/me').set('Authorization', `Bearer ${beto}`).expect(200);
+      expect(me.body.handle).toMatch(/^lector\.\d{6}$/);
+      const dani = await token(DANI, 'dani@example.com', { meta: { handle: 'soporte', birthdate: '2016-01-01' } });
+      const d = await http().get('/me').set('Authorization', `Bearer ${dani}`).expect(200);
+      expect(d.body.handle).toMatch(/^lector\.\d{6}$/);
+      // Menor de 13: la fecha no se guarda y la cuenta tendrá que completarla.
+      expect(d.body.birthdate).toBeNull();
+    });
+
+    it('crear el perfil es idempotente aunque lleguen varias peticiones a la vez', async () => {
+      const id = '55555555-5555-4555-8555-555555555555';
+      const t = await token(id, 'eli@example.com', { meta: { handle: 'eli', birthdate: '2000-01-01' } });
+      const all = await Promise.all([1, 2, 3].map(() => http().get('/me').set('Authorization', `Bearer ${t}`)));
+      expect(all.map((r) => r.status)).toEqual([200, 200, 200]);
+      expect(new Set(all.map((r) => r.body.handle))).toEqual(new Set(['eli']));
+    });
+
+    it('acepta la sesión en la cookie HttpOnly y frena peticiones de otros sitios (CSRF)', async () => {
+      const jar = `otra=1; ink_at=${ana}`;
+      const me = await http().get('/me').set('Cookie', jar).expect(200);
+      expect(me.body.handle).toBe('ana.lee');
+      // Cambiar datos con la cookie exige venir de un origen de Inkwell.
+      await http().patch('/me').set('Cookie', jar).send({ bio: 'x' }).expect(403);
+      await http().patch('/me').set('Cookie', jar).set('Origin', 'https://malicioso.example').send({ bio: 'x' }).expect(403);
+      await http().patch('/me').set('Cookie', jar).set('Origin', 'http://localhost:3000').send({ bio: 'Leo de noche.' }).expect(200);
+      // La app nativa manda la sesión en Authorization: ahí no hay cookie que robar y no aplica.
+      await http().patch('/me').set('Authorization', `Bearer ${ana}`).send({ bio: 'Leo de noche.' }).expect(200);
+      await http().get('/me').set('Cookie', 'ink_at=basura').expect(401);
+    });
+
+    it('elimina la cuenta con todo lo suyo, solo si se identificó hace poco', async () => {
+      const id = '77777777-7777-4777-8777-777777777777';
+      const viejo = await token(id, 'gabi@example.com', { meta: { handle: 'gabi', birthdate: '1999-09-09' }, authAgo: 3600 });
+      const auth = { Authorization: `Bearer ${viejo}` };
+      await http().post('/stories').set(auth).send({ title: 'De Gabi', genre: 'Drama', tropes: ['Solo de Gabi'] }).expect(201);
+      await http().post('/stories/de-gabi/chapters').set(auth).send({ title: 'Uno', publish: true }).expect(201);
+      const denied = await http().delete('/me').set(auth).expect(403);
+      expect(denied.body.code).toBe('reauth');
+
+      const fresco = await token(id, 'gabi@example.com', { authAgo: 30 });
+      await http().delete('/me').set('Authorization', `Bearer ${fresco}`).expect(204);
+      expect(deletedAccounts).toContain(id);
+      await http().get('/profiles/gabi').expect(404);
+      await http().get('/stories/de-gabi').expect(404);
+      const tags = await http().get('/tags').query({ q: 'solo de' }).expect(200);
+      expect(JSON.stringify(tags.body)).not.toContain('Solo de Gabi');
+    });
+
+    it('rechaza cuentas sin correo confirmado y anónimas', async () => {
+      const id = '66666666-6666-4666-8666-666666666666';
+      await http().get('/me').set('Authorization', `Bearer ${await token(id, 'f@example.com', { meta: { email_verified: false } })}`).expect(403);
+      await http().get('/me').set('Authorization', `Bearer ${await token(id, 'f@example.com', { anonymous: true })}`).expect(403);
+    });
+
+    it('no deja tomar nombres reservados, tampoco disfrazados', async () => {
+      for (const handle of ['admin', 'Inkwell', 'a.d.m.i.n', 'soporte_', 'koral.studio']) {
+        await http().patch('/me').set('Authorization', `Bearer ${beto}`).send({ handle }).expect(400);
+      }
+    });
+
+    it('dos personas pidiendo el mismo nombre a la vez: una lo obtiene y la otra recibe 409', async () => {
+      const res = await Promise.all([beto, ana].map((t) => http().patch('/me').set('Authorization', `Bearer ${t}`).send({ handle: 'el.mismo' })));
+      expect(res.map((r) => r.status).sort()).toEqual([200, 409]);
+      await http().patch('/me').set('Authorization', `Bearer ${ana}`).send({ handle: 'ana.lee' }).expect(200);
+    });
+  });
+
   describe('perfil completo', () => {
     const auth = () => ({ Authorization: `Bearer ${ana}` });
 
@@ -342,6 +430,10 @@ describe('Inkwell API', () => {
       const me = await http().get('/me').set(auth()).expect(200);
       expect(me.body).toMatchObject({ email: 'ana.lee@example.com', link: null, avatarUrl: null, bannerUrl: null, birthdate: null });
       await http().patch('/me').set(auth()).send({ birthdate: '2001-05-09' }).expect(200);
+      // Una vez puesta no cambia (salvo reenviar la misma, que no hace nada).
+      await http().patch('/me').set(auth()).send({ birthdate: '2001-05-09' }).expect(200);
+      const locked = await http().patch('/me').set(auth()).send({ birthdate: '1990-01-01' }).expect(409);
+      expect(locked.body.errors[0]).toMatchObject({ campo: 'birthdate' });
       const pub = await http().get('/profiles/ana.lee').expect(200);
       expect(pub.body).not.toHaveProperty('email');
       expect(pub.body).not.toHaveProperty('birthdate');
@@ -359,7 +451,7 @@ describe('Inkwell API', () => {
     });
 
     it('valida la fecha de nacimiento, el nombre y la descripción', async () => {
-      for (const birthdate of ['2030-01-01', '2001-02-30', '2020-01-01', '1800-01-01', 'ayer']) {
+      for (const birthdate of ['2030-01-01', '2001-02-30', '2020-01-01', '1800-01-01', 'ayer', null]) {
         await http().patch('/me').set(auth()).send({ birthdate }).expect(400);
       }
       await http().patch('/me').set(auth()).send({ name: '   ' }).expect(400);
