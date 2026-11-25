@@ -68,6 +68,8 @@ export const updateProfileSchema = z
     link,
     /** Se pone una sola vez (ver MeService.update): después ya no cambia. */
     birthdate: birthdateSchema,
+    /** Ver historias +18. Solo para mayores de edad (ver MeService.update). */
+    showMature: z.boolean(),
   })
   .partial()
   .strict();

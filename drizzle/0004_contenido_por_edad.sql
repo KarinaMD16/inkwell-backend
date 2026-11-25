@@ -1,0 +1,1 @@
+ALTER TABLE "profiles" ADD COLUMN "show_mature" boolean DEFAULT false NOT NULL;

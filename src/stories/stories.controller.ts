@@ -1,11 +1,13 @@
-import { Body, Controller, Delete, Get, Inject, Param, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
-import { AuthGuard, CurrentUser } from '../auth/auth.guard.js';
+import { Body, Controller, Delete, Get, Header, Inject, Param, ParseIntPipe, Post, Put, Query, UseGuards, UseInterceptors } from '@nestjs/common';
+import { AuthGuard, CurrentUser, CurrentViewer, OptionalAuth } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.service.js';
+import { PublicCacheInterceptor } from '../common/public-cache.interceptor.js';
 import { ZodPipe } from '../common/zod.pipe.js';
 import { MeService } from '../me/me.service.js';
 import {
   createChapterSchema, createStorySchema, listSchema, type CreateChapter, type CreateStory, type ListQuery,
 } from './stories.schemas.js';
+import type { Viewer } from '../visibility/visibility.js';
 import { StoriesService } from './stories.service.js';
 
 @Controller('stories')
@@ -16,25 +18,39 @@ export class StoriesController {
   ) {}
 
   // ----- lectura: no pide sesión -----
+  // Con sesión, la edad de la cuenta decide qué clasificaciones se ven; sin sesión, hasta +13.
   /** Publicadas. Filtros: q, genre, kind, rating, status, author, tags (incluir) y exclude (excluir). */
   @Get()
-  list(@Query(new ZodPipe(listSchema)) query: ListQuery) {
-    return this.stories.list(query);
+  @UseGuards(AuthGuard)
+  @OptionalAuth()
+  @UseInterceptors(PublicCacheInterceptor)
+  list(@Query(new ZodPipe(listSchema)) query: ListQuery, @CurrentViewer() viewer: Viewer | null) {
+    return this.stories.list(query, viewer);
   }
 
   @Get(':slug')
-  get(@Param('slug') slug: string) {
-    return this.stories.get(slug);
+  @UseGuards(AuthGuard)
+  @OptionalAuth()
+  @UseInterceptors(PublicCacheInterceptor)
+  get(@Param('slug') slug: string, @CurrentViewer() viewer: Viewer | null) {
+    return this.stories.get(slug, viewer);
   }
 
   @Get(':slug/chapters')
-  chapters(@Param('slug') slug: string) {
-    return this.stories.listChapters(slug);
+  @UseGuards(AuthGuard)
+  @OptionalAuth()
+  @UseInterceptors(PublicCacheInterceptor)
+  chapters(@Param('slug') slug: string, @CurrentViewer() viewer: Viewer | null) {
+    return this.stories.listChapters(slug, viewer);
   }
 
+  /** Sin caché: cada lectura suma al contador y lo que se ve depende de la edad de quien lee. */
   @Get(':slug/chapters/:n')
-  chapter(@Param('slug') slug: string, @Param('n', ParseIntPipe) n: number) {
-    return this.stories.getChapter(slug, n);
+  @UseGuards(AuthGuard)
+  @OptionalAuth()
+  @Header('Cache-Control', 'no-store')
+  chapter(@Param('slug') slug: string, @Param('n', ParseIntPipe) n: number, @CurrentViewer() viewer: Viewer | null) {
+    return this.stories.getChapter(slug, n, viewer);
   }
 
   // ----- escritura: pide sesión -----
@@ -55,12 +71,12 @@ export class StoriesController {
   @UseGuards(AuthGuard)
   async vote(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @Param('n', ParseIntPipe) n: number) {
     await this.me.getOrCreate(user);
-    return this.stories.setVote(user.id, slug, n, true);
+    return this.stories.setVote(user, slug, n, true);
   }
 
   @Delete(':slug/chapters/:n/vote')
   @UseGuards(AuthGuard)
   unvote(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @Param('n', ParseIntPipe) n: number) {
-    return this.stories.setVote(user.id, slug, n, false);
+    return this.stories.setVote(user, slug, n, false);
   }
 }

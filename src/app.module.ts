@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { AdminController } from './admin/admin.controller.js';
+import { AdminService } from './admin/admin.service.js';
 import { AuthModule } from './auth/auth.module.js';
 import { ErrorsFilter } from './common/errors.filter.js';
 import { ENV, type Env } from './config/env.js';
@@ -32,10 +34,12 @@ import { S3Storage, STORAGE } from './storage/storage.js';
       }),
     }),
   ],
-  controllers: [HealthController, MeController, ProfilesController, StoriesController, MyStoriesController, TagsController, LibraryController],
+  controllers: [HealthController, MeController, ProfilesController, StoriesController, MyStoriesController, TagsController, LibraryController, AdminController],
   providers: [
     MeService,
     StoriesService,
+    AccountsService,
+    AdminService,
     { provide: STORAGE, useClass: S3Storage },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_FILTER, useClass: ErrorsFilter },

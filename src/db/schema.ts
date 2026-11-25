@@ -36,7 +36,7 @@ const createdAt = timestamp('created_at', { withTimezone: true }).notNull().defa
  * guarda Supabase Auth y la API los lee del token de sesión.
  *
  * Públicos: handle, name, bio, link, avatarUrl, bannerUrl, createdAt.
- * Privado (solo GET /me): birthdate.
+ * Privado (solo GET /me): birthdate, showMature.
  */
 /**
  * Roles, de menos a más permisos. Moderación modera a quien lee; administración además
@@ -57,6 +57,8 @@ export const profiles = pgTable('profiles', {
   bannerUrl: text('banner_url'),
   /** Para la clasificación por edad. Nunca se muestra en el perfil público. */
   birthdate: date('birthdate'),
+  /** Quiere ver +18. Solo cuenta si es mayor de edad (ver visibility/visibility.ts). Privado, como la fecha. */
+  showMature: boolean('show_mature').notNull().default(false),
   /** lector, moderador o admin. Ver ROLES. */
   role: text('role').$type<Role>().notNull().default('lector'),
   /** Con fecha, la cuenta está suspendida: no puede escribir y su perfil e historias no se ven. */

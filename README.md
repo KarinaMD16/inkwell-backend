@@ -66,7 +66,7 @@ Con sesión: la web la manda en la cookie HttpOnly `ink_at` (y entonces los camb
 | Método y ruta | Qué hace |
 |---|---|
 | `GET /me` | Tu perfil completo, con `email` (sale del token) y `birthdate`. Lo crea la primera vez con el nombre y la fecha elegidos al registrarse (si el nombre no sirve, da uno provisional `lector.NNNNNN`) |
-| `PATCH /me` | Cambia `handle`, `name`, `bio` (300), `link` (http/https; sin protocolo se agrega `https://`; `""` lo quita) o `birthdate` (`AAAA-MM-DD`, mínimo 13 años; se pone una sola vez y después responde 409). Nombres reservados (`admin`, `soporte`, `inkwell`…) no se aceptan |
+| `PATCH /me` | Cambia `handle`, `name`, `bio` (300), `link` (http/https; sin protocolo se agrega `https://`; `""` lo quita) o `birthdate` (`AAAA-MM-DD`, mínimo 13 años; se pone una sola vez y después responde 409), y `showMature` (ver +18; solo mayores de edad, si no 400). Nombres reservados (`admin`, `soporte`, `inkwell`…) no se aceptan |
 | `PUT /me/avatar` | Sube la foto de perfil (`multipart/form-data`, campo `file`, máx. 8 MB). Queda en 400×400 WebP |
 | `PUT /me/banner` | Sube la portada del perfil. Queda en 1500×500 WebP |
 | `DELETE /me/avatar` · `DELETE /me/banner` | Quita la imagen y la borra del almacenamiento |
@@ -86,6 +86,21 @@ Con sesión: la web la manda en la cookie HttpOnly `ink_at` (y entonces los camb
 | `GET /me/library` | Tu repisa |
 | `PUT /me/library/:slug` | Guarda la historia o actualiza el capítulo por el que vas |
 | `DELETE /me/library/:slug` | La quita de la repisa |
+
+## Clasificación por edad
+
+Lo que se lee pasa por una sola función, `visibleTo` (`src/visibility/visibility.ts`): lista, ficha, índice, capítulo, votos y repisa. Las rutas de lectura aceptan sesión opcional (`@OptionalAuth`); con sesión, decide la edad de la cuenta:
+
+| Quién lee | Ve |
+|---|---|
+| Sin cuenta, sin fecha de nacimiento, o de 13 a 15 años | Todo público y +13 |
+| De 16 a 17 años | Hasta +16 |
+| Mayor de edad | Hasta +16; +18 si activó `showMature` en Ajustes |
+
+- La autora siempre ve lo suyo, aunque su edad no alcance la clasificación.
+- Lo que no le toca responde 404, igual que si no existiera.
+- Caché: sin sesión, `Cache-Control: public` (es lo apto para cualquier edad); con sesión, `private, no-store`. Los capítulos nunca se cachean. Siempre `Vary: Cookie, Authorization`.
+- Una sesión vencida en una ruta pública responde 401 (no se trata como lectura sin cuenta), para que el cliente la renueve.
 
 ## Moderación y administración
 

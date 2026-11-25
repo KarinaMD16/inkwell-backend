@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { asc, eq, inArray } from 'drizzle-orm';
-import { AUTH_DIRECTORY, type AuthDirectory } from '../auth/auth-directory.js';
+import { ACCOUNT_ADMIN, type AccountAdmin } from '../auth/auth-admin.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { DB, type Db } from '../db/db.module.js';
 import { chapters, library, profiles, stories, votes } from '../db/schema.js';
@@ -18,24 +18,27 @@ export class AccountsService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(STORAGE) private readonly storage: FileStorage,
-    @Inject(AUTH_DIRECTORY) private readonly directory: AuthDirectory,
+    @Inject(ACCOUNT_ADMIN) private readonly accounts: AccountAdmin,
   ) {}
 
   /**
-   * Borra la cuenta para siempre: perfil, historias con sus capítulos, repisa, votos, imágenes y la
-   * cuenta de Supabase Auth (con sus sesiones y su acceso con Google). Lo de la base va en una sola
-   * transacción: o se borra todo o nada.
+   * Borra la cuenta para siempre (regla 20): la de Supabase Auth (con sus sesiones y su acceso con
+   * Google), el perfil, las historias con sus capítulos, la repisa, los votos y las imágenes.
+   * Lo usan la propia persona (DELETE /me) y administración (DELETE /admin/users/:id).
    */
   async delete(id: string): Promise<void> {
     const [profile] = await this.db.select().from(profiles).where(eq(profiles.id, id));
     const covers = (await this.db.select({ url: stories.coverUrl }).from(stories).where(eq(stories.authorId, id))).map((r) => r.url);
-    await this.db.transaction(async (tx) => {
-      const used = await tagIdsOfAuthor(tx, id);
-      // Historias, capítulos, votos, repisa y etiquetas de sus historias se van en cascada.
-      if (profile) await tx.delete(profiles).where(eq(profiles.id, id));
-      await recount(tx, used);
-      await this.directory.deleteAccount(tx, id);
-    });
+    // Primero la cuenta: sin ella nadie puede volver a entrar. Si después fallara la base, el perfil
+    // huérfano lo limpia `npm run db:limpiar-muestra` (busca perfiles sin cuenta).
+    await this.accounts.deleteUser(id);
+    if (profile) {
+      await this.db.transaction(async (tx) => {
+        const used = await tagIdsOfAuthor(tx, id);
+        await tx.delete(profiles).where(eq(profiles.id, id)); // en cascada: historias, capítulos, votos, repisa
+        await recount(tx, used);
+      });
+    }
     // Las imágenes se borran al final: si falla, la cuenta ya no existe y solo queda aviso en el log.
     for (const url of [profile?.avatarUrl, profile?.bannerUrl, ...covers]) {
       if (!url) continue;
@@ -69,7 +72,7 @@ export class AccountsService {
       cuenta: { id: user.id, correo: user.email },
       perfil: {
         usuario: profile.handle, nombre: profile.name, presentacion: profile.bio, enlace: profile.link,
-        foto: profile.avatarUrl, portada: profile.bannerUrl, nacimiento: profile.birthdate, rol: profile.role,
+        foto: profile.avatarUrl, portada: profile.bannerUrl, nacimiento: profile.birthdate, verMas18: profile.showMature, rol: profile.role,
         creado: profile.createdAt,
       },
       historias: own.map((s) => ({

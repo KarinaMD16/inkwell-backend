@@ -22,6 +22,11 @@ const schema = z.object({
   AUTH_COOKIE: z.string().default('ink_at'),
   /** Servicio de cuentas de Supabase con permisos de administrador. Solo para eliminar cuentas. Nunca en el frontend. */
   SUPABASE_SERVICE_ROLE_KEY: blankAsMissing(z.string().optional()),
+  /**
+   * Correos que siempre tienen rol admin, separados por coma. Así nace la primera cuenta de
+   * administración sin tocar la base; después se pueden dar roles desde el panel.
+   */
+  ADMIN_EMAILS: blankAsMissing(z.string().default('')),
   /** Cuántos proxies hay delante (Render: 1). Así el límite de peticiones ve la IP real de cada persona. */
   TRUST_PROXY: z.coerce.number().int().min(0).default(0),
   /** Peticiones por minuto que acepta la API de una misma IP (regla 8). Las rutas sensibles tienen un límite menor. */

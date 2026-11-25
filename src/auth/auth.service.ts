@@ -2,6 +2,7 @@ import { ForbiddenException, Inject, Injectable, UnauthorizedException } from '@
 import { createRemoteJWKSet, decodeProtectedHeader, jwtVerify, type JWTPayload } from 'jose';
 import { ENV, type Env } from '../config/env.js';
 import type { Role } from '../db/schema.js';
+import { ANONYMOUS_MAX, type Rating } from '../visibility/visibility.js';
 
 export interface AuthUser {
   id: string;
@@ -13,6 +14,11 @@ export interface AuthUser {
   signup: { handle?: unknown; birthdate?: unknown };
   /** Cuándo se identificó por última vez de verdad (contraseña, Google, enlace), en segundos. Renovar la sesión no lo cambia. */
   authTime: number;
+  /** Lo completa AuthGuard con lo guardado en el perfil. */
+  role: Role;
+  suspended: boolean;
+  /** Clasificación más alta que puede leer, según su edad y Ajustes. También la completa AuthGuard. */
+  maxRating: Rating;
 }
 
 /**
@@ -70,6 +76,9 @@ export class AuthService {
       email: typeof payload.email === 'string' ? payload.email : null,
       signup: { handle: meta.handle, birthdate: meta.birthdate },
       authTime: authTime(payload),
+      role: 'lector',
+      suspended: false,
+      maxRating: ANONYMOUS_MAX,
     };
   }
 }

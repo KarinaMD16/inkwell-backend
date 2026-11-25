@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, Inject, Patch, Put, UploadedFile, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, HttpCode, Inject, Patch, Put, UploadedFile, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { AuthGuard, CurrentUser } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.service.js';
@@ -32,20 +32,6 @@ export class MeController {
   async export(@CurrentUser() user: AuthUser) {
     await this.me.getOrCreate(user);
     return this.accounts.export(user);
-  }
-
-  /**
-   * Borra tu cuenta para siempre. Hay que confirmar escribiendo tu nombre de usuario, para que
-   * un clic suelto no se lleve todo.
-   */
-  @Delete()
-  @HttpCode(204)
-  async remove(@CurrentUser() user: AuthUser, @Body(new ZodPipe(confirmSchema)) body: z.infer<typeof confirmSchema>) {
-    const profile = await this.me.getOrCreate(user);
-    if (body.confirm.trim().replace(/^@/, '').toLowerCase() !== profile.handle) {
-      throw new BadRequestException({ message: 'Datos inválidos', errors: [{ campo: 'confirm', error: 'Escribe tu nombre de usuario tal como aparece' }] });
-    }
-    await this.accounts.delete(user.id);
   }
 
   @Patch()

@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { and, asc, count, desc, eq, exists, gt, ilike, inArray, isNotNull, isNull, lte, max, notExists, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, exists, gt, ilike, inArray, max, notExists, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { fold, slugify } from '../common/slug.js';
 import { DB, type Db } from '../db/db.module.js';
@@ -9,12 +9,10 @@ import { STORAGE, type FileStorage } from '../storage/storage.js';
 import type {
   ChapterOrder, CreateChapter, CreateStory, ListQuery, PublishChapter, UpdateChapter, UpdateStory,
 } from './stories.schemas.js';
+import { isLive, visibleTo, type Viewer } from '../visibility/visibility.js';
 import { recount, saveTags, tagIdsOf, type Tagged, type Tx } from './tagging.js';
 
 type StoryRow = typeof stories.$inferSelect;
-
-/** Un capítulo es visible si tiene fecha de publicación y esa fecha ya pasó. */
-const isLive = and(isNotNull(chapters.publishedAt), lte(chapters.publishedAt, sql`now()`));
 
 const stateOf = (publishedAt: Date | null) => (!publishedAt ? 'borrador' : publishedAt > new Date() ? 'programado' : 'publicado');
 
@@ -40,23 +38,6 @@ export class StoriesService {
   ) {}
 
   // ----- lectura pública -----
-
-  private liveOf() {
-    return this.db.select({ one: sql`1` }).from(chapters).where(and(eq(chapters.storyId, stories.id), isLive));
-  }
-
-  /** La autora tiene la cuenta suspendida. Sirve aunque la consulta no traiga `profiles`. */
-  private authorSuspended() {
-    return this.db.select({ one: sql`1` }).from(profiles).where(and(eq(profiles.id, stories.authorId), isNotNull(profiles.suspendedAt)));
-  }
-
-  /**
-   * Lo que el público puede ver: la autora la publicó y ya tiene algo que leer, moderación no la
-   * retiró y la cuenta de la autora no está suspendida.
-   */
-  private visible() {
-    return and(eq(stories.published, true), isNull(stories.removedAt), notExists(this.authorSuspended()), exists(this.liveOf()));
-  }
 
   /** Columnas públicas de una historia, con autor, capítulos publicados y votos. */
   private counts() {
@@ -96,7 +77,8 @@ export class StoriesService {
       .where(and(eq(storyTags.storyId, stories.id), inArray(tags.slug, slugs)));
   }
 
-  async list(query: ListQuery) {
+  /** `viewer`: quien lee (null sin sesión). Decide qué clasificaciones le tocan; ver visibility.ts. */
+  async list(query: ListQuery, viewer: Viewer | null) {
     // Cada palabra se busca por prefijo y sin tildes: "orb baj" encuentra "Órbita baja".
     const terms = query.q ? fold(query.q).split(' ').filter(Boolean) : [];
     const tsquery = terms.map((t) => `${t}:*`).join(' & ');
@@ -104,7 +86,7 @@ export class StoriesService {
     const include = (query.tags ?? []).map(slugify).filter(Boolean);
     const exclude = (query.exclude ?? []).map(slugify).filter(Boolean);
     const where = and(
-      this.visible(),
+      visibleTo(this.db, viewer),
       query.genre ? or(eq(stories.genre, query.genre), sql`${query.genre} = any(${stories.subgenres})`) : undefined,
       query.kind ? eq(stories.kind, query.kind) : undefined,
       query.rating ? eq(stories.rating, query.rating) : undefined,
@@ -120,8 +102,8 @@ export class StoriesService {
     return { items, limit: query.limit, offset: query.offset };
   }
 
-  async get(slug: string) {
-    const [story] = await this.select().where(and(eq(stories.slug, slug), this.visible()));
+  async get(slug: string, viewer: Viewer | null) {
+    const [story] = await this.select().where(and(eq(stories.slug, slug), visibleTo(this.db, viewer)));
     if (!story) throw new NotFoundException('No encontramos esa historia');
     return story;
   }
@@ -132,10 +114,10 @@ export class StoriesService {
     return row;
   }
 
-  /** La historia, solo si su autora la tiene publicada y nada la esconde (retiro o suspensión). */
-  private async publicRow(slug: string) {
+  /** La historia, solo si quien lee la puede ver (publicada, sin retiro ni suspensión, y de su edad). */
+  private async publicRow(slug: string, viewer: Viewer | null) {
     const [row] = await this.db.select().from(stories)
-      .where(and(eq(stories.slug, slug), eq(stories.published, true), isNull(stories.removedAt), notExists(this.authorSuspended())));
+      .where(and(eq(stories.slug, slug), visibleTo(this.db, viewer, { needsChapter: false })));
     if (!row) throw new NotFoundException('No encontramos esa historia');
     return row;
   }
@@ -152,8 +134,8 @@ export class StoriesService {
     return chapter;
   }
 
-  async listChapters(slug: string) {
-    const story = await this.publicRow(slug);
+  async listChapters(slug: string, viewer: Viewer | null) {
+    const story = await this.publicRow(slug, viewer);
     const list = await this.db
       .select({ title: chapters.title, badge: chapters.badge, publishedAt: chapters.publishedAt })
       .from(chapters)
@@ -162,8 +144,8 @@ export class StoriesService {
     return list.map((c, i) => ({ n: i + 1, ...c }));
   }
 
-  async getChapter(slug: string, n: number) {
-    const story = await this.publicRow(slug);
+  async getChapter(slug: string, n: number, viewer: Viewer | null) {
+    const story = await this.publicRow(slug, viewer);
     const chapter = await this.liveChapter(story.id, n);
     // Contador simple de lecturas; más adelante conviene contarlas por persona.
     await this.db.update(stories).set({ reads: sql`${stories.reads} + 1` }).where(eq(stories.id, story.id));
@@ -171,8 +153,9 @@ export class StoriesService {
     return { n, title: chapter.title, titleStyle: chapter.titleStyle, badge: chapter.badge, content: chapter.content, publishedAt: chapter.publishedAt, votes: c };
   }
 
-  async setVote(userId: string, slug: string, n: number, on: boolean) {
-    const story = await this.publicRow(slug);
+  async setVote(viewer: Viewer, slug: string, n: number, on: boolean) {
+    const userId = viewer.id;
+    const story = await this.publicRow(slug, viewer);
     const chapter = await this.liveChapter(story.id, n);
     if (on) await this.db.insert(votes).values({ userId, chapterId: chapter.id }).onConflictDoNothing();
     else await this.db.delete(votes).where(and(eq(votes.userId, userId), eq(votes.chapterId, chapter.id)));

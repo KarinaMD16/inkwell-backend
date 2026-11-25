@@ -29,6 +29,13 @@
       "when": 1794863018400,
       "tag": "0003_gestion_de_usuarios",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795621491182,
+      "tag": "0004_contenido_por_edad",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { DB, type Db } from '../db/db.module.js';
-import type { Tx } from '../stories/tagging.js';
 
 export interface AccountInfo {
   email: string | null;
@@ -10,15 +9,13 @@ export interface AccountInfo {
 
 /**
  * Lo que la API necesita de las cuentas de Supabase Auth (tabla auth.users), que no es nuestra:
- * el correo y el último acceso para el panel de administración, y borrar la cuenta.
+ * el correo y el último acceso para el panel de administración.
  * Las pruebas lo reemplazan por uno en memoria, porque su Postgres no tiene el esquema auth.
  */
 export interface AuthDirectory {
   lookup(ids: string[]): Promise<Map<string, AccountInfo>>;
   /** Ids de las cuentas cuyo correo contiene el texto. */
   findByEmail(text: string): Promise<string[]>;
-  /** Borra la cuenta dentro de la transacción en curso: si algo falla después, no se borra nada. */
-  deleteAccount(tx: Tx, id: string): Promise<void>;
 }
 export const AUTH_DIRECTORY = Symbol('AUTH_DIRECTORY');
 
@@ -27,8 +24,7 @@ type Row = Record<string, unknown>;
 const rowsOf = (result: unknown): Row[] => (Array.isArray(result) ? result : ((result as { rows?: Row[] }).rows ?? []));
 
 /**
- * Lee y borra en auth.users directo desde Postgres: el rol con el que se conecta la API puede
- * hacerlo, así no hace falta guardar la llave secreta de Supabase en el servidor.
+ * Lee auth.users directo desde Postgres: el rol con el que se conecta la API puede hacerlo.
  */
 @Injectable()
 export class SqlAuthDirectory implements AuthDirectory {
@@ -54,8 +50,4 @@ export class SqlAuthDirectory implements AuthDirectory {
     return rowsOf(result).map((r) => String(r.id));
   }
 
-  async deleteAccount(tx: Tx, id: string): Promise<void> {
-    // Se borran también sus sesiones e identidades (Google): auth.users las tiene en cascada.
-    await (tx as Db).execute(sql`delete from auth.users where id = ${id}::uuid`);
-  }
 }

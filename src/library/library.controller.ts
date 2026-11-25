@@ -7,6 +7,7 @@ import { ZodPipe } from '../common/zod.pipe.js';
 import { DB, type Db } from '../db/db.module.js';
 import { library, profiles, stories } from '../db/schema.js';
 import { MeService } from '../me/me.service.js';
+import { visibleTo } from '../visibility/visibility.js';
 
 const saveSchema = z.object({ chapter: z.number().int().min(1).default(1) });
 
@@ -34,7 +35,9 @@ export class LibraryController {
   @Put(':slug')
   async save(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @Body(new ZodPipe(saveSchema)) body: z.infer<typeof saveSchema>) {
     await this.me.getOrCreate(user);
-    const [story] = await this.db.select({ id: stories.id }).from(stories).where(eq(stories.slug, slug));
+    // Solo entra lo que esta persona puede ver: nada de guardar una historia retirada o de otra edad.
+    const [story] = await this.db.select({ id: stories.id }).from(stories)
+      .where(and(eq(stories.slug, slug), visibleTo(this.db, { id: user.id, maxRating: user.maxRating })));
     if (!story) throw new NotFoundException('No encontramos esa historia');
     const now = new Date();
     await this.db
