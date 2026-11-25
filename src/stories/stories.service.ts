@@ -1,20 +1,18 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { and, asc, count, desc, eq, exists, gt, ilike, inArray, isNotNull, lte, max, notExists, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, max, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
-import { fold, slugify } from '../common/slug.js';
+import { slugify } from '../common/slug.js';
 import { DB, type Db } from '../db/db.module.js';
-import { chapters, profiles, stories, storyTags, tags, votes, type Block } from '../db/schema.js';
+import { chapters, profiles, stories, votes, type Block } from '../db/schema.js';
 import { processImage } from '../storage/images.js';
 import { STORAGE, type FileStorage } from '../storage/storage.js';
 import type {
-  ChapterOrder, CreateChapter, CreateStory, ListQuery, PublishChapter, UpdateChapter, UpdateStory,
+  ChapterOrder, CreateChapter, CreateStory, PublishChapter, UpdateChapter, UpdateStory,
 } from './stories.schemas.js';
+import { isLive, visibleTo, type Viewer } from '../visibility/visibility.js';
 import { recount, saveTags, tagIdsOf, type Tagged, type Tx } from './tagging.js';
 
 type StoryRow = typeof stories.$inferSelect;
-
-/** Un capítulo es visible si tiene fecha de publicación y esa fecha ya pasó. */
-const isLive = and(isNotNull(chapters.publishedAt), lte(chapters.publishedAt, sql`now()`));
 
 const stateOf = (publishedAt: Date | null) => (!publishedAt ? 'borrador' : publishedAt > new Date() ? 'programado' : 'publicado');
 
@@ -41,17 +39,8 @@ export class StoriesService {
 
   // ----- lectura pública -----
 
-  private liveOf() {
-    return this.db.select({ one: sql`1` }).from(chapters).where(and(eq(chapters.storyId, stories.id), isLive));
-  }
-
-  /** Lo que el público puede ver: la autora la publicó y ya tiene algo que leer. */
-  private visible() {
-    return and(eq(stories.published, true), exists(this.liveOf()));
-  }
-
-  /** Columnas públicas de una historia, con autor, capítulos publicados y votos. */
-  private counts() {
+  /** Capítulos publicados, votos y fecha de lo último publicado. Público: lo usa discovery para ordenar. */
+  counts() {
     const chapterCount = this.db.select({ c: count() }).from(chapters).where(and(eq(chapters.storyId, stories.id), isLive));
     const voteCount = this.db
       .select({ c: count() })
@@ -78,42 +67,16 @@ export class StoriesService {
     };
   }
 
-  private select() {
+  /**
+   * Tarjeta pública de una historia (con autora, capítulos publicados y votos), sin filtro.
+   * Punto de contacto: discovery (Explorar y búsqueda) arma sus listas con esto.
+   */
+  cards() {
     return this.db.select(this.columns()).from(stories).innerJoin(profiles, eq(stories.authorId, profiles.id));
   }
 
-  /** "Tiene esta etiqueta", sin importar la categoría: por aquí pasan los filtros de incluir y excluir. */
-  private tagged(slugs: string[]) {
-    return this.db.select({ one: sql`1` }).from(storyTags).innerJoin(tags, eq(tags.id, storyTags.tagId))
-      .where(and(eq(storyTags.storyId, stories.id), inArray(tags.slug, slugs)));
-  }
-
-  async list(query: ListQuery) {
-    // Cada palabra se busca por prefijo y sin tildes: "orb baj" encuentra "Órbita baja".
-    const terms = query.q ? fold(query.q).split(' ').filter(Boolean) : [];
-    const tsquery = terms.map((t) => `${t}:*`).join(' & ');
-    const like = query.q ? `%${query.q.replace(/[%_\\]/g, '\\$&')}%` : null;
-    const include = (query.tags ?? []).map(slugify).filter(Boolean);
-    const exclude = (query.exclude ?? []).map(slugify).filter(Boolean);
-    const where = and(
-      this.visible(),
-      query.genre ? or(eq(stories.genre, query.genre), sql`${query.genre} = any(${stories.subgenres})`) : undefined,
-      query.kind ? eq(stories.kind, query.kind) : undefined,
-      query.rating ? eq(stories.rating, query.rating) : undefined,
-      query.status ? eq(stories.status, query.status) : undefined,
-      query.author ? eq(profiles.handle, query.author) : undefined,
-      like ? or(tsquery ? sql`to_tsvector('simple', ${stories.searchText}) @@ to_tsquery('simple', ${tsquery})` : undefined, ilike(profiles.handle, like)) : undefined,
-      ...include.map((slug) => exists(this.tagged([slug]))),
-      exclude.length ? notExists(this.tagged(exclude)) : undefined,
-    );
-    const totals = this.counts();
-    const order = { votos: desc(totals.votes), recientes: desc(totals.updatedAt), lecturas: desc(stories.reads) }[query.sort];
-    const items = await this.select().where(where).orderBy(order, asc(stories.slug)).limit(query.limit).offset(query.offset);
-    return { items, limit: query.limit, offset: query.offset };
-  }
-
-  async get(slug: string) {
-    const [story] = await this.select().where(and(eq(stories.slug, slug), this.visible()));
+  async get(slug: string, viewer: Viewer | null) {
+    const [story] = await this.cards().where(and(eq(stories.slug, slug), visibleTo(this.db, viewer)));
     if (!story) throw new NotFoundException('No encontramos esa historia');
     return story;
   }
@@ -124,10 +87,11 @@ export class StoriesService {
     return row;
   }
 
-  /** La historia, solo si su autora la tiene publicada. */
-  private async publicRow(slug: string) {
-    const row = await this.row(slug);
-    if (!row.published) throw new NotFoundException('No encontramos esa historia');
+  /** La historia, solo si quien lee la puede ver (publicada, sin retiro ni suspensión, y de su edad). */
+  private async publicRow(slug: string, viewer: Viewer | null) {
+    const [row] = await this.db.select().from(stories)
+      .where(and(eq(stories.slug, slug), visibleTo(this.db, viewer, { needsChapter: false })));
+    if (!row) throw new NotFoundException('No encontramos esa historia');
     return row;
   }
 
@@ -143,8 +107,8 @@ export class StoriesService {
     return chapter;
   }
 
-  async listChapters(slug: string) {
-    const story = await this.publicRow(slug);
+  async listChapters(slug: string, viewer: Viewer | null) {
+    const story = await this.publicRow(slug, viewer);
     const list = await this.db
       .select({ title: chapters.title, badge: chapters.badge, publishedAt: chapters.publishedAt })
       .from(chapters)
@@ -153,8 +117,8 @@ export class StoriesService {
     return list.map((c, i) => ({ n: i + 1, ...c }));
   }
 
-  async getChapter(slug: string, n: number) {
-    const story = await this.publicRow(slug);
+  async getChapter(slug: string, n: number, viewer: Viewer | null) {
+    const story = await this.publicRow(slug, viewer);
     const chapter = await this.liveChapter(story.id, n);
     // Contador simple de lecturas; más adelante conviene contarlas por persona.
     await this.db.update(stories).set({ reads: sql`${stories.reads} + 1` }).where(eq(stories.id, story.id));
@@ -162,8 +126,9 @@ export class StoriesService {
     return { n, title: chapter.title, titleStyle: chapter.titleStyle, badge: chapter.badge, content: chapter.content, publishedAt: chapter.publishedAt, votes: c };
   }
 
-  async setVote(userId: string, slug: string, n: number, on: boolean) {
-    const story = await this.publicRow(slug);
+  async setVote(viewer: Viewer, slug: string, n: number, on: boolean) {
+    const userId = viewer.id;
+    const story = await this.publicRow(slug, viewer);
     const chapter = await this.liveChapter(story.id, n);
     if (on) await this.db.insert(votes).values({ userId, chapterId: chapter.id }).onConflictDoNothing();
     else await this.db.delete(votes).where(and(eq(votes.userId, userId), eq(votes.chapterId, chapter.id)));
@@ -177,7 +142,11 @@ export class StoriesService {
   listMine(authorId: string) {
     const allChapters = this.db.select({ c: count() }).from(chapters).where(eq(chapters.storyId, stories.id));
     return this.db
-      .select({ ...this.columns(), published: stories.published, totalChapters: sql<number>`(${allChapters})`.mapWith(Number), updatedAt: stories.updatedAt })
+      .select({
+        ...this.columns(), published: stories.published, totalChapters: sql<number>`(${allChapters})`.mapWith(Number), updatedAt: stories.updatedAt,
+        // La autora ve si moderación se la retiró y por qué.
+        removedAt: stories.removedAt, removedReason: stories.removedReason,
+      })
       .from(stories)
       .innerJoin(profiles, eq(stories.authorId, profiles.id))
       .where(eq(stories.authorId, authorId))
@@ -194,7 +163,7 @@ export class StoriesService {
   /** Todo lo que necesita la pantalla de gestión: la ficha completa y los capítulos con su estado. */
   async manage(userId: string, slug: string) {
     const story = await this.owned(userId, slug);
-    const [view] = await this.select().where(eq(stories.id, story.id));
+    const [view] = await this.cards().where(eq(stories.id, story.id));
     const list = await this.db
       .select({ id: chapters.id, n: chapters.n, title: chapters.title, badge: chapters.badge, words: chapters.words, publishedAt: chapters.publishedAt, updatedAt: chapters.updatedAt })
       .from(chapters)
@@ -202,6 +171,7 @@ export class StoriesService {
       .orderBy(asc(chapters.n));
     return {
       ...view, published: story.published, totalChapters: list.length, updatedAt: story.updatedAt,
+      removedAt: story.removedAt, removedReason: story.removedReason,
       chapterList: list.map((c) => ({ ...c, state: stateOf(c.publishedAt) })),
     };
   }

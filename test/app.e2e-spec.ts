@@ -12,6 +12,7 @@ import { DB } from '../src/db/db.module.js';
 import * as schema from '../src/db/schema.js';
 import { S3Storage, STORAGE, type FileStorage } from '../src/storage/storage.js';
 import { ACCOUNT_ADMIN, type AccountAdmin } from '../src/auth/auth-admin.js';
+import { AUTH_DIRECTORY, type AuthDirectory } from '../src/auth/auth-directory.js';
 import sharp from 'sharp';
 
 // Las pruebas usan un Postgres en memoria (PGlite) con las mismas migraciones,
@@ -20,7 +21,7 @@ const SECRET = 'secreto-de-prueba-con-suficiente-longitud';
 const env: Env = {
   PORT: 0, DATABASE_URL: 'postgres://sin-usar', SUPABASE_URL: 'https://prueba.supabase.co',
   SUPABASE_JWT_SECRET: SECRET, CORS_ORIGINS: 'http://localhost:3000', STORAGE_REGION: 'auto',
-  AUTH_COOKIE: 'ink_at', TRUST_PROXY: 0, RATE_LIMIT_PER_MINUTE: 300,
+  AUTH_COOKIE: 'ink_at', TRUST_PROXY: 0, RATE_LIMIT_PER_MINUTE: 300, ADMIN_EMAILS: 'admin@example.com',
 };
 
 /** Almacenamiento en memoria: guarda lo subido para poder revisarlo. */
@@ -37,7 +38,24 @@ class MemoryStorage implements FileStorage {
 const files = new MemoryStorage();
 /** Cuentas de Supabase borradas en las pruebas. */
 const deletedAccounts: string[] = [];
-const accountAdmin: AccountAdmin = { deleteUser: async (id) => { deletedAccounts.push(id); } };
+const accountAdmin: AccountAdmin = { deleteUser: async (id) => { deletedAccounts.push(id); directory.emails.delete(id); } };
+/** En las pruebas toda cuenta existe hasta que se borra. */
+const accountExists = async (id: string) => !deletedAccounts.includes(id);
+
+/** Correos de las cuentas, como los tendría auth.users (el Postgres de prueba no tiene ese esquema). */
+class MemoryDirectory implements AuthDirectory {
+  readonly emails = new Map<string, string>();
+  async lookup(ids: string[]) {
+    return new Map(ids.filter((id) => this.emails.has(id)).map((id) => [id, { email: this.emails.get(id)!, lastSignInAt: null }]));
+  }
+  async findByEmail(text: string) {
+    return [...this.emails].filter(([, email]) => email.includes(text.toLowerCase())).map(([id]) => id);
+  }
+  exists(id: string) {
+    return accountExists(id);
+  }
+}
+const directory = new MemoryDirectory();
 const ANA = '11111111-1111-4111-8111-111111111111';
 const BETO = '22222222-2222-4222-8222-222222222222';
 
@@ -71,6 +89,7 @@ describe('Inkwell API', () => {
       .overrideProvider(DB).useValue(db)
       .overrideProvider(STORAGE).useValue(files)
       .overrideProvider(ACCOUNT_ADMIN).useValue(accountAdmin)
+      .overrideProvider(AUTH_DIRECTORY).useValue(directory)
       .compile();
     app = moduleRef.createNestApplication();
     await app.init();
@@ -233,10 +252,10 @@ describe('Inkwell API', () => {
       expect((await http().get('/me/stories/segunda').set(other())).body.tropes).toEqual(['Slow burn']);
 
       const edited = await http().patch('/me/stories/el-coro').set(auth())
-        .send({ title: 'Lo que dijo el coro', status: 'En pausa', rating: '+16', kind: 'Original', tropes: ['Slow burn'], license: 'CC BY-NC' }).expect(200);
+        .send({ title: 'Lo que dijo el coro', status: 'En pausa', rating: '+13', kind: 'Original', tropes: ['Slow burn'], license: 'CC BY-NC' }).expect(200);
       // Al dejar de ser fanfic pierde el fandom; lo que no se mandó sigue igual.
       expect(edited.body).toMatchObject({
-        slug: 'el-coro', title: 'Lo que dijo el coro', status: 'En pausa', rating: '+16', kind: 'Original', fandom: 'Original',
+        slug: 'el-coro', title: 'Lo que dijo el coro', status: 'En pausa', rating: '+13', kind: 'Original', fandom: 'Original',
         tropes: ['Slow burn'], characters: ['Irene', 'Dani'], license: 'CC BY-NC',
       });
     });
@@ -307,7 +326,7 @@ describe('Inkwell API', () => {
       expect(slugs((await http().get('/stories').query({ tags: 'slow-burn,espacio' })).body)).toEqual([]);
       expect(slugs((await http().get('/stories').query({ exclude: 'slow-burn' })).body)).not.toContain('el-coro');
       expect(slugs((await http().get('/stories').query({ genre: 'Drama', exclude: 'espacio' })).body)).toContain('el-coro');
-      expect(slugs((await http().get('/stories').query({ status: 'En pausa', rating: '+16', kind: 'Original' })).body)).toEqual(['el-coro']);
+      expect(slugs((await http().get('/stories').query({ status: 'En pausa', rating: '+13', kind: 'Original' })).body)).toEqual(['el-coro']);
     });
 
     it('autocompleta solo etiquetas de historias visibles', async () => {
@@ -515,6 +534,317 @@ describe('Inkwell API', () => {
       const storage = new S3Storage(env);
       await expect(storage.put('x', Buffer.from('x'), 'image/webp')).rejects.toMatchObject({ status: 503 });
       await expect(storage.removeByUrl('https://otro.example/x')).resolves.toBeUndefined();
+    });
+  });
+  describe('gestión de usuarios', () => {
+    // Cuentas propias de este bloque: Carla es admin por ADMIN_EMAILS.
+    const CARLA = '12121212-1212-4121-8121-121212121212';
+    const DANI = '13131313-1313-4131-8131-131313131313';
+    const EVA = '14141414-1414-4141-8141-141414141414';
+    let carla: string;
+    let dani: string;
+    let eva: string;
+    const as = (t: string) => ({ Authorization: `Bearer ${t}` });
+    const slugs = (body: { items: { slug: string }[] }) => body.items.map((x) => x.slug);
+    const uses = async (q: string) => ((await http().get('/tags').query({ q })).body as { uses: number }[])[0]?.uses ?? 0;
+
+    beforeAll(async () => {
+      carla = await token(CARLA, 'admin@example.com');
+      dani = await token(DANI, 'dani.borra@example.com');
+      eva = await token(EVA, 'eva@example.com');
+      for (const [id, email] of [[ANA, 'ana.lee@example.com'], [BETO, 'beto@example.com'], [CARLA, 'admin@example.com'], [DANI, 'dani.borra@example.com'], [EVA, 'eva@example.com']]) {
+        directory.emails.set(id, email);
+      }
+      // Una historia propia para moderar, con una etiqueta que no usa nadie más.
+      await http().post('/stories').set(as(ana)).send({ title: 'Para moderar', genre: 'Drama', tropes: ['Tropo de moderación'] }).expect(201);
+      await http().post('/stories/para-moderar/chapters').set(as(ana)).send({ title: 'Uno', publish: true, content: [{ type: 'p', text: 'Hola.' }] }).expect(201);
+    });
+
+    it('ADMIN_EMAILS da rol admin a su cuenta', async () => {
+      expect((await http().get('/me').set(as(carla)).expect(200)).body).toMatchObject({ role: 'admin', suspendedAt: null });
+      expect((await http().get('/me').set(as(ana))).body.role).toBe('lector');
+    });
+
+    it('el panel pide sesión y al menos rol moderador', async () => {
+      await http().get('/admin/users').expect(401);
+      await http().get('/admin/users').set(as(ana)).expect(403);
+      await http().get('/admin/stories').set(as(ana)).expect(403);
+    });
+
+    it('admin cambia roles, pero no el propio', async () => {
+      await http().patch(`/admin/users/${BETO}/role`).set(as(carla)).send({ role: 'jefa' }).expect(400);
+      const res = await http().patch(`/admin/users/${BETO}/role`).set(as(carla)).send({ role: 'moderador' }).expect(200);
+      expect(res.body).toMatchObject({ handle: expect.any(String), role: 'moderador', email: 'beto@example.com' });
+      await http().patch(`/admin/users/${CARLA}/role`).set(as(carla)).send({ role: 'lector' }).expect(403);
+      // Moderación no da roles.
+      await http().patch(`/admin/users/${ANA}/role`).set(as(beto)).send({ role: 'moderador' }).expect(403);
+    });
+
+    it('lista cuentas con correo y busca por @, nombre o correo', async () => {
+      const all = await http().get('/admin/users').set(as(beto)).expect(200);
+      expect(all.body.total).toBeGreaterThanOrEqual(3);
+      const byEmail = await http().get('/admin/users').query({ q: 'ana.lee@' }).set(as(beto)).expect(200);
+      expect(byEmail.body.items).toEqual([expect.objectContaining({ id: ANA, email: 'ana.lee@example.com', stories: expect.any(Number) })]);
+      const mods = await http().get('/admin/users').query({ role: 'moderador' }).set(as(beto)).expect(200);
+      expect(mods.body.items.map((u: { id: string }) => u.id)).toEqual([BETO]);
+    });
+
+    it('suspender esconde perfil e historias, impide escribir y se puede revertir', async () => {
+      expect(await uses('tropo-de-moderacion')).toBe(1);
+      await http().post(`/admin/users/${ANA}/suspend`).set(as(beto)).send({}).expect(400);
+      const res = await http().post(`/admin/users/${ANA}/suspend`).set(as(beto)).send({ reason: 'Spam en comentarios' }).expect(201);
+      expect(res.body).toMatchObject({ id: ANA, suspendedReason: 'Spam en comentarios', suspendedAt: expect.any(String) });
+
+      await http().get('/profiles/ana.lee').expect(404);
+      await http().get('/stories/para-moderar').expect(404);
+      await http().get('/stories/para-moderar/chapters/1').expect(404);
+      expect(slugs((await http().get('/stories').query({ limit: 50 })).body)).not.toContain('para-moderar');
+      expect(await uses('tropo-de-moderacion')).toBe(0);
+
+      // Puede leer y ver su perfil, no escribir.
+      expect((await http().get('/me').set(as(ana)).expect(200)).body.suspendedReason).toBe('Spam en comentarios');
+      const blocked = await http().post('/stories').set(as(ana)).send({ title: 'No debería', genre: 'Drama' }).expect(403);
+      expect(blocked.body.message).toMatch(/suspendida/);
+      await http().patch('/me').set(as(ana)).send({ bio: 'x' }).expect(403);
+
+      await http().post(`/admin/users/${ANA}/unsuspend`).set(as(beto)).expect(201);
+      await http().get('/profiles/ana.lee').expect(200);
+      await http().get('/stories/para-moderar').expect(200);
+      expect(await uses('tropo-de-moderacion')).toBe(1);
+    });
+
+    it('solo se modera a quien tiene menos permisos, y nunca a una misma', async () => {
+      await http().post(`/admin/users/${CARLA}/suspend`).set(as(beto)).send({ reason: 'Intento' }).expect(403);
+      await http().post(`/admin/users/${BETO}/suspend`).set(as(beto)).send({ reason: 'Intento' }).expect(403);
+      await http().post(`/admin/users/${CARLA}/suspend`).set(as(carla)).send({ reason: 'Intento' }).expect(403);
+      await http().post('/admin/users/no-es-un-id/suspend').set(as(carla)).send({ reason: 'Intento' }).expect(400);
+      await http().post('/admin/users/66666666-6666-4666-8666-666666666666/suspend').set(as(carla)).send({ reason: 'Intento' }).expect(404);
+    });
+
+    it('retirar una historia la esconde del público pero no de su autora', async () => {
+      await http().post('/admin/stories/para-moderar/remove').set(as(beto)).send({ reason: 'Contenido sin advertencias' }).expect(201);
+      await http().get('/stories/para-moderar').expect(404);
+      expect(await uses('tropo-de-moderacion')).toBe(0);
+      const mine = (await http().get('/me/stories').set(as(ana))).body.find((x: { slug: string }) => x.slug === 'para-moderar');
+      expect(mine).toMatchObject({ removedReason: 'Contenido sin advertencias', removedAt: expect.any(String) });
+      const retired = await http().get('/admin/stories').query({ estado: 'retiradas' }).set(as(beto)).expect(200);
+      expect(slugs(retired.body)).toEqual(['para-moderar']);
+
+      await http().post('/admin/stories/para-moderar/restore').set(as(beto)).expect(201);
+      await http().get('/stories/para-moderar').expect(200);
+      expect(await uses('tropo-de-moderacion')).toBe(1);
+      await http().post('/admin/stories/no-existe/remove').set(as(beto)).send({ reason: 'Nada' }).expect(404);
+    });
+
+    it('todo queda en el registro, lo más nuevo primero', async () => {
+      const log = await http().get('/admin/actions').set(as(beto)).expect(200);
+      expect(log.body.map((a: { action: string }) => a.action).slice(0, 5)).toEqual(['restaurar', 'retirar', 'reactivar', 'suspender', 'rol']);
+      expect(log.body[3]).toMatchObject({ actor: expect.stringMatching(/^@/), targetLabel: '@ana.lee', detail: 'Spam en comentarios' });
+    });
+
+    it('descarga una copia de todos tus datos', async () => {
+      const res = await http().get('/me/export').set(as(ana)).expect(200);
+      expect(res.headers['content-disposition']).toMatch(/inkwell-mis-datos\.json/);
+      expect(res.body.cuenta).toEqual({ id: ANA, correo: 'ana.lee@example.com' });
+      const story = res.body.historias.find((x: { slug: string }) => x.slug === 'para-moderar');
+      expect(story.capitulos[0]).toMatchObject({ titulo: 'Uno', contenido: [{ type: 'p', text: 'Hola.' }] });
+    });
+
+    it('una cuenta suspendida igual puede borrarse, y su token ya no revive el perfil', async () => {
+      const me = (await http().get('/me').set(as(dani)).expect(200)).body;
+      await http().post('/stories').set(as(dani)).send({ title: 'De Dani', genre: 'Humor' }).expect(201);
+      await http().post(`/admin/users/${DANI}/suspend`).set(as(carla)).send({ reason: 'Prueba' }).expect(201);
+      await http().delete('/me').set(as(dani)).expect(204);
+      expect(deletedAccounts).toContain(DANI);
+      // El token sigue firmado una hora, pero la cuenta ya no existe: no vuelve a nacer el perfil.
+      await http().get('/me').set(as(dani)).expect(401);
+      await http().get(`/profiles/${me.handle}`).expect(404);
+      expect((await http().get('/admin/users').query({ q: me.handle }).set(as(carla))).body.items).toEqual([]);
+    });
+
+    it('administración puede borrar cuentas; moderación no', async () => {
+      await http().get('/me').set(as(eva)).expect(200);
+      await http().delete(`/admin/users/${EVA}`).set(as(beto)).expect(403);
+      await http().delete(`/admin/users/${CARLA}`).set(as(carla)).expect(403);
+      await http().delete(`/admin/users/${EVA}`).set(as(carla)).expect(204);
+      expect(deletedAccounts).toContain(EVA);
+      expect((await http().get('/admin/actions').set(as(carla))).body[0]).toMatchObject({ action: 'borrar cuenta', targetKind: 'perfil' });
+    });
+  });
+  describe('clasificación por edad', () => {
+    const AUTORA = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
+    const TEEN = 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2';
+    const DIECISIETE = 'c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3';
+    const ADULTA = 'd4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4';
+    /** Fecha de nacimiento de alguien que cumplió `years` hace un mes. */
+    const born = (years: number) => {
+      const d = new Date();
+      d.setUTCFullYear(d.getUTCFullYear() - years);
+      d.setUTCMonth(d.getUTCMonth() - 1);
+      return d.toISOString().slice(0, 10);
+    };
+    const as = (t: string) => ({ Authorization: `Bearer ${t}` });
+    const SLUGS = { 'Todo público': 'edad-todo-publico', '+13': 'edad-mas-13', '+16': 'edad-mas-16', '+18': 'edad-mas-18' } as const;
+    const listed = async (headers: Record<string, string> = {}) =>
+      ((await http().get('/stories').query({ q: 'Edad', limit: 50 }).set(headers).expect(200)).body.items as { slug: string }[])
+        .map((x) => x.slug).filter((x) => x.startsWith('edad-')).sort((a, b) => a.localeCompare(b));
+    let autora: string;
+    let teen: string;
+    let diecisiete: string;
+    let adulta: string;
+
+    beforeAll(async () => {
+      autora = await token(AUTORA, 'autora.edad@example.com', { meta: { handle: 'autora.edad', birthdate: born(30) } });
+      teen = await token(TEEN, 'teen@example.com', { meta: { handle: 'lee.teen', birthdate: born(14) } });
+      diecisiete = await token(DIECISIETE, 'diecisiete@example.com', { meta: { handle: 'lee.diecisiete', birthdate: born(17) } });
+      adulta = await token(ADULTA, 'adulta@example.com', { meta: { handle: 'lee.adulta', birthdate: born(25) } });
+      for (const t of [teen, diecisiete, adulta]) await http().get('/me').set(as(t)).expect(200);
+      const titles = { 'Todo público': 'Edad todo publico', '+13': 'Edad mas 13', '+16': 'Edad mas 16', '+18': 'Edad mas 18' };
+      for (const [rating, title] of Object.entries(titles)) {
+        const res = await http().post('/stories').set(as(autora)).send({ title, genre: 'Drama', rating }).expect(201);
+        expect(res.body.slug).toBe(SLUGS[rating as keyof typeof SLUGS]);
+        await http().post(`/stories/${res.body.slug}/chapters`).set(as(autora)).send({ title: 'Uno', publish: true, content: [{ type: 'p', text: 'Hola.' }] }).expect(201);
+      }
+    });
+
+    it('sin cuenta y de 13 a 15 años: todo público y +13', async () => {
+      expect(await listed()).toEqual(['edad-mas-13', 'edad-todo-publico']);
+      expect(await listed(as(teen))).toEqual(['edad-mas-13', 'edad-todo-publico']);
+      for (const headers of [{}, as(teen)]) {
+        await http().get('/stories/edad-mas-16').set(headers).expect(404);
+        await http().get('/stories/edad-mas-16/chapters').set(headers).expect(404);
+        await http().get('/stories/edad-mas-18/chapters/1').set(headers).expect(404);
+      }
+      await http().get('/stories/edad-mas-13/chapters/1').set(as(teen)).expect(200);
+    });
+
+    it('de 16 a 17 años: hasta +16, y no puede activar +18', async () => {
+      expect(await listed(as(diecisiete))).toEqual(['edad-mas-13', 'edad-mas-16', 'edad-todo-publico']);
+      await http().get('/stories/edad-mas-16/chapters/1').set(as(diecisiete)).expect(200);
+      await http().get('/stories/edad-mas-18').set(as(diecisiete)).expect(404);
+      const denied = await http().patch('/me').set(as(diecisiete)).send({ showMature: true }).expect(400);
+      expect(denied.body.errors[0]).toMatchObject({ campo: 'showMature' });
+    });
+
+    it('mayor de edad: +18 solo si lo activa', async () => {
+      expect(await listed(as(adulta))).toEqual(['edad-mas-13', 'edad-mas-16', 'edad-todo-publico']);
+      expect((await http().patch('/me').set(as(adulta)).send({ showMature: true }).expect(200)).body.showMature).toBe(true);
+      expect(await listed(as(adulta))).toEqual(['edad-mas-13', 'edad-mas-16', 'edad-mas-18', 'edad-todo-publico']);
+      await http().get('/stories/edad-mas-18/chapters/1').set(as(adulta)).expect(200);
+      await http().patch('/me').set(as(adulta)).send({ showMature: false }).expect(200);
+      await http().get('/stories/edad-mas-18').set(as(adulta)).expect(404);
+    });
+
+    it('la autora siempre ve lo suyo, aunque no le toque por edad', async () => {
+      const joven = await token(TEEN, 'teen@example.com');
+      await http().post('/stories').set(as(joven)).send({ title: 'Edad propia', genre: 'Drama', rating: '+18' }).expect(201);
+      await http().post('/stories/edad-propia/chapters').set(as(joven)).send({ title: 'Uno', publish: true, content: [{ type: 'p', text: 'Mío.' }] }).expect(201);
+      await http().get('/stories/edad-propia/chapters/1').set(as(joven)).expect(200);
+      await http().get('/stories/edad-propia').expect(404);
+    });
+
+    it('los votos y la repisa solo aceptan lo que la persona puede ver', async () => {
+      await http().put('/stories/edad-mas-16/chapters/1/vote').set(as(teen)).expect(404);
+      await http().put('/me/library/edad-mas-16').set(as(teen)).send({}).expect(404);
+      await http().put('/me/library/edad-mas-13').set(as(teen)).send({}).expect(200);
+      await http().put('/me/library/edad-mas-16').set(as(diecisiete)).send({}).expect(200);
+    });
+
+    it('solo se cachea en público lo que se ve sin cuenta', async () => {
+      const anon = await http().get('/stories/edad-mas-13').expect(200);
+      expect(anon.headers['cache-control']).toMatch(/^public/);
+      const mine = await http().get('/stories/edad-mas-13').set(as(teen)).expect(200);
+      expect(mine.headers['cache-control']).toBe('private, no-store');
+      expect((await http().get('/stories/edad-mas-13/chapters/1')).headers['cache-control']).toBe('no-store');
+    });
+
+    it('una sesión vencida no se trata como lectura sin cuenta', async () => {
+      await http().get('/stories').set('Authorization', 'Bearer vencido').expect(401);
+    });
+  });
+  describe('descubrir: búsqueda, filtros y etiquetas bloqueadas', () => {
+    const ESCRITORA = 'e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5';
+    const LECTORA = 'f6f6f6f6-f6f6-4f6f-8f6f-f6f6f6f6f6f6';
+    const as = (t: string) => ({ Authorization: `Bearer ${t}` });
+    const slugs = (body: { items: { slug: string }[] }) => body.items.map((x) => x.slug).sort((a, b) => a.localeCompare(b));
+    const find = async (query: Record<string, string | number>, headers: Record<string, string> = {}) =>
+      slugs((await http().get('/stories').query({ q: 'Busca', limit: 50, ...query }).set(headers).expect(200)).body);
+    let escritora: string;
+    let lectora: string;
+
+    beforeAll(async () => {
+      escritora = await token(ESCRITORA, 'escritora@example.com', { meta: { handle: 'escritora.busca', birthdate: '1990-05-05' } });
+      lectora = await token(LECTORA, 'lectora@example.com', { meta: { handle: 'lectora.busca', birthdate: '1995-05-05' } });
+      const create = async (body: object) => {
+        const res = await http().post('/stories').set(as(escritora)).send({ rating: 'Todo público', ...body }).expect(201);
+        await http().post(`/stories/${res.body.slug}/chapters`).set(as(escritora)).send({ title: 'Uno', publish: true, content: [{ type: 'p', text: 'Hola.' }] }).expect(201);
+        return res.body.slug as string;
+      };
+      await create({ title: 'Busca luna roja', genre: 'Fantasía', tropes: ['Enemies to lovers'], warnings: ['Muerte de personaje'], status: 'Completa', format: 'Redes sociales' });
+      await create({ title: 'Busca sol', genre: 'Romance', tropes: ['Enemies to lovers'] });
+      await create({ title: 'Busca fandom', genre: 'Aventura', kind: 'Fanfic', fandom: 'Genshin' });
+      await http().get('/me').set(as(lectora)).expect(200);
+      await http().put('/stories/busca-sol/chapters/1/vote').set(as(lectora)).expect(200);
+    });
+
+    it('busca texto completo y ordena por relevancia', async () => {
+      expect(await find({ q: 'luna', sort: 'relevancia' })).toEqual(['busca-luna-roja']);
+      expect(await find({ q: '@escritora.bus' })).toEqual(['busca-fandom', 'busca-luna-roja', 'busca-sol']);
+      // Relevancia sin texto no falla: ordena por votos.
+      await http().get('/stories').query({ sort: 'relevancia' }).expect(200);
+    });
+
+    it('incluye y excluye etiquetas, y combina filtros de varias opciones', async () => {
+      expect(await find({ tags: 'enemies-to-lovers', exclude: 'muerte-de-personaje' })).toEqual(['busca-sol']);
+      expect(await find({ genre: 'Fantasía,Romance' })).toEqual(['busca-luna-roja', 'busca-sol']);
+      expect(await find({ fandom: 'genshin' })).toEqual(['busca-fandom']);
+      expect(await find({ status: 'Completa', format: 'Redes sociales,Con fichas' })).toEqual(['busca-luna-roja']);
+      expect(await find({ length: 'corta', updated: 'semana' })).toHaveLength(3);
+      expect(await find({ length: 'larga' })).toEqual([]);
+      await http().get('/stories').query({ rating: '+21' }).expect(400);
+      await http().get('/stories').query({ cualquiera: 'x' }).expect(400);
+    });
+
+    it('pagina sin descargar todo', async () => {
+      const first = await http().get('/stories').query({ q: 'Busca', limit: 2, sort: 'recientes' }).expect(200);
+      expect(first.body).toMatchObject({ limit: 2, offset: 0, hasMore: true });
+      expect(first.body.items).toHaveLength(2);
+      const last = await http().get('/stories').query({ q: 'Busca', limit: 2, offset: 2, sort: 'recientes' }).expect(200);
+      expect(last.body).toMatchObject({ hasMore: false });
+      expect(last.body.items).toHaveLength(1);
+    });
+
+    it('populares cuenta los votos recientes, y hay secciones por etiqueta', async () => {
+      const res = await http().get('/tags/enemies-to-lovers/sections').expect(200);
+      expect(res.body.tag).toMatchObject({ kind: 'tropo', name: 'Enemies to lovers' });
+      expect(res.body.populares[0].slug).toBe('busca-sol');
+      expect(res.body.nuevas.map((x: { slug: string }) => x.slug).sort()).toEqual(['busca-luna-roja', 'busca-sol']);
+      expect((await http().get('/tags/no-existe/sections').expect(200)).body).toEqual({ tag: null, nuevas: [], populares: [] });
+    });
+
+    it('autocompleta por categoría o en todas', async () => {
+      const all = (await http().get('/tags').query({ q: 'gens' }).expect(200)).body;
+      expect(all).toEqual([expect.objectContaining({ kind: 'fandom', slug: 'genshin' })]);
+      expect((await http().get('/tags').query({ q: 'gens', kind: 'tropo' })).body).toEqual([]);
+    });
+
+    it('las etiquetas bloqueadas esconden historias de sus listas, no del enlace directo', async () => {
+      await http().put('/me/blocked-tags').send({ kind: 'tropo', slug: 'enemies-to-lovers' }).expect(401);
+      await http().put('/me/blocked-tags').set(as(lectora)).send({ kind: 'tropo', slug: 'no-existe' }).expect(404);
+      const list = await http().put('/me/blocked-tags').set(as(lectora)).send({ kind: 'tropo', slug: 'enemies-to-lovers' }).expect(200);
+      expect(list.body).toEqual([{ kind: 'tropo', slug: 'enemies-to-lovers', name: 'Enemies to lovers' }]);
+      await http().put('/me/blocked-tags').set(as(lectora)).send({ kind: 'tropo', slug: 'enemies-to-lovers' }).expect(200);
+      expect((await http().get('/me/blocked-tags').set(as(lectora))).body).toHaveLength(1);
+
+      expect(await find({}, as(lectora))).toEqual(['busca-fandom']);
+      expect((await http().get('/tags/enemies-to-lovers/sections').set(as(lectora))).body.nuevas).toEqual([]);
+      await http().get('/stories/busca-sol').set(as(lectora)).expect(200);
+      // Sin sesión, o para la autora, nada cambia.
+      expect(await find({})).toHaveLength(3);
+      expect(await find({}, as(escritora))).toHaveLength(3);
+
+      await http().delete('/me/blocked-tags/tropo/enemies-to-lovers').set(as(lectora)).expect(204);
+      expect(await find({}, as(lectora))).toHaveLength(3);
     });
   });
 });

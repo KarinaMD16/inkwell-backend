@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
-  boolean, date, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid,
+  boolean, check, date, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid,
 } from 'drizzle-orm/pg-core';
 
 /**
@@ -36,8 +36,15 @@ const createdAt = timestamp('created_at', { withTimezone: true }).notNull().defa
  * guarda Supabase Auth y la API los lee del token de sesión.
  *
  * Públicos: handle, name, bio, link, avatarUrl, bannerUrl, createdAt.
- * Privado (solo GET /me): birthdate.
+ * Privado (solo GET /me): birthdate, showMature.
  */
+/**
+ * Roles, de menos a más permisos. Moderación modera a quien lee; administración además
+ * modera a moderación, cambia roles y borra cuentas.
+ */
+export const ROLES = ['lector', 'moderador', 'admin'] as const;
+export type Role = (typeof ROLES)[number];
+
 export const profiles = pgTable('profiles', {
   id: uuid('id').primaryKey(),
   handle: text('handle').notNull().unique(),
@@ -50,9 +57,16 @@ export const profiles = pgTable('profiles', {
   bannerUrl: text('banner_url'),
   /** Para la clasificación por edad. Nunca se muestra en el perfil público. */
   birthdate: date('birthdate'),
+  /** Quiere ver +18. Solo cuenta si es mayor de edad (ver visibility/visibility.ts). Privado, como la fecha. */
+  showMature: boolean('show_mature').notNull().default(false),
+  /** lector, moderador o admin. Ver ROLES. */
+  role: text('role').$type<Role>().notNull().default('lector'),
+  /** Con fecha, la cuenta está suspendida: no puede escribir y su perfil e historias no se ven. */
+  suspendedAt: timestamp('suspended_at', { withTimezone: true }),
+  suspendedReason: text('suspended_reason'),
   createdAt,
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-}).enableRLS();
+}, (t) => [check('profiles_role_check', sql`${t.role} in ('lector', 'moderador', 'admin')`)]).enableRLS();
 
 const textArray = (name: string) => text(name).array().notNull().default(sql`'{}'::text[]`);
 
@@ -95,6 +109,9 @@ export const stories = pgTable('stories', {
   reads: integer('reads').notNull().default(0),
   /** La autora quiere que se vea. Aun así solo aparece si tiene al menos un capítulo publicado. */
   published: boolean('published').notNull().default(false),
+  /** Con fecha, moderación la retiró: no se ve aunque esté publicada. La autora la sigue viendo. */
+  removedAt: timestamp('removed_at', { withTimezone: true }),
+  removedReason: text('removed_reason'),
   /** Título, frase gancho y etiquetas en minúsculas y sin tildes: sobre esto corre la búsqueda. */
   searchText: text('search_text').notNull().default(''),
   createdAt,
@@ -153,6 +170,16 @@ export const storyTags = pgTable('story_tags', {
   index('story_tags_tag').on(t.tagId, t.storyId),
 ]).enableRLS();
 
+/**
+ * Etiquetas que cada persona no quiere ver (preferencia de contenido). Las historias que las
+ * llevan no salen en sus listas ni búsquedas; el enlace directo sigue abriendo. Ver visibility.ts.
+ */
+export const blockedTags = pgTable('blocked_tags', {
+  userId: uuid('user_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  tagId: uuid('tag_id').notNull().references(() => tags.id, { onDelete: 'cascade' }),
+  createdAt,
+}, (t) => [primaryKey({ columns: [t.userId, t.tagId] })]).enableRLS();
+
 /** La repisa de cada persona: historia guardada y capítulo por el que va. */
 export const library = pgTable('library', {
   userId: uuid('user_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
@@ -166,3 +193,21 @@ export const votes = pgTable('votes', {
   chapterId: uuid('chapter_id').notNull().references(() => chapters.id, { onDelete: 'cascade' }),
   createdAt,
 }, (t) => [primaryKey({ columns: [t.userId, t.chapterId] })]).enableRLS();
+
+/**
+ * Lo que hizo moderación y administración, para poder revisarlo después. `target` es el id del
+ * perfil o el slug de la historia; queda aunque lo afectado se borre.
+ */
+export const adminActions = pgTable('admin_actions', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  actorId: uuid('actor_id').references(() => profiles.id, { onDelete: 'set null' }),
+  /** El @ de quien actuó, por si después borra su cuenta. */
+  actorHandle: text('actor_handle').notNull(),
+  action: text('action').notNull(),
+  targetKind: text('target_kind').$type<'perfil' | 'historia'>().notNull(),
+  target: text('target').notNull(),
+  /** Cómo se llamaba lo afectado en ese momento: @handle o el título. */
+  targetLabel: text('target_label').notNull(),
+  detail: text('detail'),
+  createdAt,
+}, (t) => [index('admin_actions_created').on(t.createdAt)]).enableRLS();

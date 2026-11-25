@@ -1,10 +1,11 @@
-import { Body, Controller, Delete, Get, HttpCode, Inject, Patch, Put, UploadedFile, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, HttpCode, Inject, Patch, Put, UploadedFile, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { AuthGuard, CurrentUser } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { ZodPipe } from '../common/zod.pipe.js';
 import type { ImageKind } from '../storage/images.js';
 import { need, upload, type UploadedImage } from '../storage/upload.js';
+import { AccountsService } from './accounts.service.js';
 import { MeService } from './me.service.js';
 import { updateProfileSchema, type ProfilePatch } from './profile.schemas.js';
 
@@ -14,12 +15,23 @@ const SENSITIVE = { default: { limit: 20, ttl: 60_000 } };
 @Controller('me')
 @UseGuards(AuthGuard)
 export class MeController {
-  constructor(@Inject(MeService) private readonly me: MeService) {}
+  constructor(
+    @Inject(MeService) private readonly me: MeService,
+    @Inject(AccountsService) private readonly accounts: AccountsService,
+  ) {}
 
   /** Tu perfil completo, con el correo de tu cuenta y tu fecha de nacimiento (privados). */
   @Get()
   async get(@CurrentUser() user: AuthUser) {
     return this.me.view(await this.me.getOrCreate(user), user);
+  }
+
+  /** Una copia de todos tus datos en JSON: perfil, historias con sus capítulos, repisa y votos. */
+  @Get('export')
+  @Header('Content-Disposition', 'attachment; filename="inkwell-mis-datos.json"')
+  async export(@CurrentUser() user: AuthUser) {
+    await this.me.getOrCreate(user);
+    return this.accounts.export(user);
   }
 
   @Patch()

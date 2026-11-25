@@ -1,5 +1,5 @@
 import { Controller, Get, Inject, NotFoundException, Param } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { DB, type Db } from '../db/db.module.js';
 import { profiles } from '../db/schema.js';
 
@@ -17,7 +17,7 @@ export class ProfilesController {
         avatarUrl: profiles.avatarUrl, bannerUrl: profiles.bannerUrl, createdAt: profiles.createdAt,
       })
       .from(profiles)
-      .where(eq(profiles.handle, handle));
+      .where(and(eq(profiles.handle, handle), isNull(profiles.suspendedAt)));
     if (!found) throw new NotFoundException('No encontramos ese perfil');
     return found;
   }
