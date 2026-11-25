@@ -23,6 +23,7 @@ cp .env.example .env     # en Windows: copy .env.example .env
 # completa .env con los datos de tu proyecto Supabase (ver abajo)
 npm run db:migrate       # crea las tablas
 npm run db:limpiar-muestra  # borra los datos del antiguo seed (agrega -- --borrar para confirmar)
+npm run db:seed             # datos de ejemplo realistas (ver «Datos de ejemplo»)
 npm run start:dev        # http://localhost:3001
 ```
 
@@ -128,6 +129,20 @@ Reglas: nadie se modera ni se cambia el rol a sí mismo, y solo se modera a quie
 
 El correo y el último acceso salen de `auth.users` de Supabase, y borrar una cuenta borra su fila ahí:
 el rol con el que la API se conecta a Postgres puede hacerlo, así que no hace falta la llave secreta.
+
+## Datos de ejemplo
+
+`npm run db:seed` crea datos con forma de uso real para probar cada flujo sin depender del avance de las demás:
+
+- 8 personas de 15 a 31 años (`@caro.lee` 15, `@dani.paginas` 16, `@leo.escribe` 17, `@marisol.fics` 19, `@tinta.lunar` 24, `@vale.modera` 26 y moderadora, `@sofi.noches` 28, `@ramiro.verso` 31).
+- 13 historias originales de todos los géneros, tipos y clasificaciones (Todo público a +18), con fandoms, tropos y advertencias; capítulos con chat, posts, fichas e interludios; un borrador, un capítulo programado y una historia sin publicar.
+- Votos con fechas de los últimos 80 días (alimentan «Populares ahora») y repisas.
+
+Es idempotente: cada corrida borra la semilla anterior y la vuelve a crear igual. Solo toca cuentas `semilla.<usuario>@example.com` marcadas con `user_metadata.semilla`; las reales no se tocan. Necesita `SUPABASE_SERVICE_ROLE_KEY`.
+
+- Entrar con una cuenta de la semilla, en local: `npm run db:seed -- --entrar @caro.lee` da un enlace de un solo uso. Con `SEED_PASSWORD` en `.env`, todas tienen esa contraseña.
+- Quitarla: `npm run db:seed -- --borrar`.
+- El texto está en `src/db/semilla/datos.ts`: para agregar historias o personas, edítalo ahí.
 
 ## Base de datos
 
