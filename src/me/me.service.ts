@@ -1,6 +1,7 @@
-import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, UnauthorizedException, Inject, Injectable, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { randomBytes, randomInt } from 'node:crypto';
+import { AUTH_DIRECTORY, type AuthDirectory } from '../auth/auth-directory.js';
 import { adminEmails } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { isUniqueViolation } from '../common/db-errors.js';
@@ -27,6 +28,7 @@ export class MeService {
     @Inject(STORAGE) private readonly storage: FileStorage,
     @Inject(AccountsService) private readonly accounts: AccountsService,
     @Inject(ENV) private readonly env: Env,
+    @Inject(AUTH_DIRECTORY) private readonly directory: AuthDirectory,
   ) {}
 
   /** Lo que ve la propia persona: su perfil completo más el correo de su cuenta (sale del token). */
@@ -46,6 +48,9 @@ export class MeService {
   async getOrCreate(user: AuthUser): Promise<ProfileRow> {
     const [found] = await this.db.select().from(profiles).where(eq(profiles.id, user.id));
     if (found) return found;
+    // Tras eliminar una cuenta, su token sigue firmado hasta que vence (1 h): sin esto, cualquier
+    // petición con él volvería a crear un perfil vacío de alguien que ya no existe (regla 20).
+    if (!(await this.directory.exists(user.id))) throw new UnauthorizedException('Esta cuenta ya no existe.');
 
     const wanted = handleSchema.safeParse(user.signup.handle);
     const birth = birthdateSchema.safeParse(user.signup.birthdate);

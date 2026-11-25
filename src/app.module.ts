@@ -7,6 +7,10 @@ import { AuthModule } from './auth/auth.module.js';
 import { ErrorsFilter } from './common/errors.filter.js';
 import { ENV, type Env } from './config/env.js';
 import { DbModule } from './db/db.module.js';
+import { BlockedTagsController } from './discovery/blocked-tags.controller.js';
+import { DiscoveryController } from './discovery/discovery.controller.js';
+import { DiscoveryService } from './discovery/discovery.service.js';
+import { TagsController } from './discovery/tags.controller.js';
 import { HealthController } from './health/health.controller.js';
 import { LibraryController } from './library/library.controller.js';
 import { AccountsService } from './me/accounts.service.js';
@@ -16,7 +20,6 @@ import { ProfilesController } from './me/profiles.controller.js';
 import { MyStoriesController } from './stories/my-stories.controller.js';
 import { StoriesController } from './stories/stories.controller.js';
 import { StoriesService } from './stories/stories.service.js';
-import { TagsController } from './stories/tags.controller.js';
 import { S3Storage, STORAGE } from './storage/storage.js';
 
 @Module({
@@ -34,10 +37,11 @@ import { S3Storage, STORAGE } from './storage/storage.js';
       }),
     }),
   ],
-  controllers: [HealthController, MeController, ProfilesController, StoriesController, MyStoriesController, TagsController, LibraryController, AdminController],
+  controllers: [HealthController, MeController, BlockedTagsController, ProfilesController, DiscoveryController, StoriesController, MyStoriesController, TagsController, LibraryController, AdminController],
   providers: [
     MeService,
     StoriesService,
+    DiscoveryService,
     AccountsService,
     AdminService,
     { provide: STORAGE, useClass: S3Storage },

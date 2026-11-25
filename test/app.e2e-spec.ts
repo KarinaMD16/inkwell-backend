@@ -39,6 +39,8 @@ const files = new MemoryStorage();
 /** Cuentas de Supabase borradas en las pruebas. */
 const deletedAccounts: string[] = [];
 const accountAdmin: AccountAdmin = { deleteUser: async (id) => { deletedAccounts.push(id); directory.emails.delete(id); } };
+/** En las pruebas toda cuenta existe hasta que se borra. */
+const accountExists = async (id: string) => !deletedAccounts.includes(id);
 
 /** Correos de las cuentas, como los tendría auth.users (el Postgres de prueba no tiene ese esquema). */
 class MemoryDirectory implements AuthDirectory {
@@ -48,6 +50,9 @@ class MemoryDirectory implements AuthDirectory {
   }
   async findByEmail(text: string) {
     return [...this.emails].filter(([, email]) => email.includes(text.toLowerCase())).map(([id]) => id);
+  }
+  exists(id: string) {
+    return accountExists(id);
   }
 }
 const directory = new MemoryDirectory();
@@ -533,9 +538,9 @@ describe('Inkwell API', () => {
   });
   describe('gestión de usuarios', () => {
     // Cuentas propias de este bloque: Carla es admin por ADMIN_EMAILS.
-    const CARLA = '77777777-7777-4777-8777-777777777777';
-    const DANI = '88888888-8888-4888-8888-888888888888';
-    const EVA = '99999999-9999-4999-8999-999999999999';
+    const CARLA = '12121212-1212-4121-8121-121212121212';
+    const DANI = '13131313-1313-4131-8131-131313131313';
+    const EVA = '14141414-1414-4141-8141-141414141414';
     let carla: string;
     let dani: string;
     let eva: string;
@@ -645,12 +650,14 @@ describe('Inkwell API', () => {
       expect(story.capitulos[0]).toMatchObject({ titulo: 'Uno', contenido: [{ type: 'p', text: 'Hola.' }] });
     });
 
-    it('una cuenta suspendida igual puede borrarse', async () => {
+    it('una cuenta suspendida igual puede borrarse, y su token ya no revive el perfil', async () => {
       const me = (await http().get('/me').set(as(dani)).expect(200)).body;
       await http().post('/stories').set(as(dani)).send({ title: 'De Dani', genre: 'Humor' }).expect(201);
       await http().post(`/admin/users/${DANI}/suspend`).set(as(carla)).send({ reason: 'Prueba' }).expect(201);
       await http().delete('/me').set(as(dani)).expect(204);
       expect(deletedAccounts).toContain(DANI);
+      // El token sigue firmado una hora, pero la cuenta ya no existe: no vuelve a nacer el perfil.
+      await http().get('/me').set(as(dani)).expect(401);
       await http().get(`/profiles/${me.handle}`).expect(404);
       expect((await http().get('/admin/users').query({ q: me.handle }).set(as(carla))).body.items).toEqual([]);
     });
@@ -753,6 +760,91 @@ describe('Inkwell API', () => {
 
     it('una sesión vencida no se trata como lectura sin cuenta', async () => {
       await http().get('/stories').set('Authorization', 'Bearer vencido').expect(401);
+    });
+  });
+  describe('descubrir: búsqueda, filtros y etiquetas bloqueadas', () => {
+    const ESCRITORA = 'e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5';
+    const LECTORA = 'f6f6f6f6-f6f6-4f6f-8f6f-f6f6f6f6f6f6';
+    const as = (t: string) => ({ Authorization: `Bearer ${t}` });
+    const slugs = (body: { items: { slug: string }[] }) => body.items.map((x) => x.slug).sort((a, b) => a.localeCompare(b));
+    const find = async (query: Record<string, string | number>, headers: Record<string, string> = {}) =>
+      slugs((await http().get('/stories').query({ q: 'Busca', limit: 50, ...query }).set(headers).expect(200)).body);
+    let escritora: string;
+    let lectora: string;
+
+    beforeAll(async () => {
+      escritora = await token(ESCRITORA, 'escritora@example.com', { meta: { handle: 'escritora.busca', birthdate: '1990-05-05' } });
+      lectora = await token(LECTORA, 'lectora@example.com', { meta: { handle: 'lectora.busca', birthdate: '1995-05-05' } });
+      const create = async (body: object) => {
+        const res = await http().post('/stories').set(as(escritora)).send({ rating: 'Todo público', ...body }).expect(201);
+        await http().post(`/stories/${res.body.slug}/chapters`).set(as(escritora)).send({ title: 'Uno', publish: true, content: [{ type: 'p', text: 'Hola.' }] }).expect(201);
+        return res.body.slug as string;
+      };
+      await create({ title: 'Busca luna roja', genre: 'Fantasía', tropes: ['Enemies to lovers'], warnings: ['Muerte de personaje'], status: 'Completa', format: 'Redes sociales' });
+      await create({ title: 'Busca sol', genre: 'Romance', tropes: ['Enemies to lovers'] });
+      await create({ title: 'Busca fandom', genre: 'Aventura', kind: 'Fanfic', fandom: 'Genshin' });
+      await http().get('/me').set(as(lectora)).expect(200);
+      await http().put('/stories/busca-sol/chapters/1/vote').set(as(lectora)).expect(200);
+    });
+
+    it('busca texto completo y ordena por relevancia', async () => {
+      expect(await find({ q: 'luna', sort: 'relevancia' })).toEqual(['busca-luna-roja']);
+      expect(await find({ q: '@escritora.bus' })).toEqual(['busca-fandom', 'busca-luna-roja', 'busca-sol']);
+      // Relevancia sin texto no falla: ordena por votos.
+      await http().get('/stories').query({ sort: 'relevancia' }).expect(200);
+    });
+
+    it('incluye y excluye etiquetas, y combina filtros de varias opciones', async () => {
+      expect(await find({ tags: 'enemies-to-lovers', exclude: 'muerte-de-personaje' })).toEqual(['busca-sol']);
+      expect(await find({ genre: 'Fantasía,Romance' })).toEqual(['busca-luna-roja', 'busca-sol']);
+      expect(await find({ fandom: 'genshin' })).toEqual(['busca-fandom']);
+      expect(await find({ status: 'Completa', format: 'Redes sociales,Con fichas' })).toEqual(['busca-luna-roja']);
+      expect(await find({ length: 'corta', updated: 'semana' })).toHaveLength(3);
+      expect(await find({ length: 'larga' })).toEqual([]);
+      await http().get('/stories').query({ rating: '+21' }).expect(400);
+      await http().get('/stories').query({ cualquiera: 'x' }).expect(400);
+    });
+
+    it('pagina sin descargar todo', async () => {
+      const first = await http().get('/stories').query({ q: 'Busca', limit: 2, sort: 'recientes' }).expect(200);
+      expect(first.body).toMatchObject({ limit: 2, offset: 0, hasMore: true });
+      expect(first.body.items).toHaveLength(2);
+      const last = await http().get('/stories').query({ q: 'Busca', limit: 2, offset: 2, sort: 'recientes' }).expect(200);
+      expect(last.body).toMatchObject({ hasMore: false });
+      expect(last.body.items).toHaveLength(1);
+    });
+
+    it('populares cuenta los votos recientes, y hay secciones por etiqueta', async () => {
+      const res = await http().get('/tags/enemies-to-lovers/sections').expect(200);
+      expect(res.body.tag).toMatchObject({ kind: 'tropo', name: 'Enemies to lovers' });
+      expect(res.body.populares[0].slug).toBe('busca-sol');
+      expect(res.body.nuevas.map((x: { slug: string }) => x.slug).sort()).toEqual(['busca-luna-roja', 'busca-sol']);
+      expect((await http().get('/tags/no-existe/sections').expect(200)).body).toEqual({ tag: null, nuevas: [], populares: [] });
+    });
+
+    it('autocompleta por categoría o en todas', async () => {
+      const all = (await http().get('/tags').query({ q: 'gens' }).expect(200)).body;
+      expect(all).toEqual([expect.objectContaining({ kind: 'fandom', slug: 'genshin' })]);
+      expect((await http().get('/tags').query({ q: 'gens', kind: 'tropo' })).body).toEqual([]);
+    });
+
+    it('las etiquetas bloqueadas esconden historias de sus listas, no del enlace directo', async () => {
+      await http().put('/me/blocked-tags').send({ kind: 'tropo', slug: 'enemies-to-lovers' }).expect(401);
+      await http().put('/me/blocked-tags').set(as(lectora)).send({ kind: 'tropo', slug: 'no-existe' }).expect(404);
+      const list = await http().put('/me/blocked-tags').set(as(lectora)).send({ kind: 'tropo', slug: 'enemies-to-lovers' }).expect(200);
+      expect(list.body).toEqual([{ kind: 'tropo', slug: 'enemies-to-lovers', name: 'Enemies to lovers' }]);
+      await http().put('/me/blocked-tags').set(as(lectora)).send({ kind: 'tropo', slug: 'enemies-to-lovers' }).expect(200);
+      expect((await http().get('/me/blocked-tags').set(as(lectora))).body).toHaveLength(1);
+
+      expect(await find({}, as(lectora))).toEqual(['busca-fandom']);
+      expect((await http().get('/tags/enemies-to-lovers/sections').set(as(lectora))).body.nuevas).toEqual([]);
+      await http().get('/stories/busca-sol').set(as(lectora)).expect(200);
+      // Sin sesión, o para la autora, nada cambia.
+      expect(await find({})).toHaveLength(3);
+      expect(await find({}, as(escritora))).toHaveLength(3);
+
+      await http().delete('/me/blocked-tags/tropo/enemies-to-lovers').set(as(lectora)).expect(204);
+      expect(await find({}, as(lectora))).toHaveLength(3);
     });
   });
 });

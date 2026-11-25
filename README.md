@@ -54,11 +54,12 @@ Lectura, sin sesión:
 | Método y ruta | Qué hace |
 |---|---|
 | `GET /health` | Estado de la API y de la conexión a la base |
-| `GET /stories` | Lista las visibles (publicadas y con al menos un capítulo fuera). Admite `q` (sin tildes y por prefijo), `genre`, `kind`, `rating`, `status`, `author`, `tags` (incluir, separadas por coma), `exclude` (excluir), `sort` (`votos`, `recientes`, `lecturas`), `limit`, `offset` |
+| `GET /stories` | Busca y filtra, por páginas (`limit`, `offset`; responde `hasMore`). `q`: texto completo sin tildes y por prefijo (título, frase, etiquetas) o `@autora`. Filtros de una opción por historia, separados por coma = «cualquiera»: `genre`, `fandom` (slugs), `rating`, `status`, `format`, `length` (`corta` < 15 caps., `media` hasta 30, `larga`). `tags`: incluir todas; `exclude`: ninguna. `updated`: `semana` o `mes`. `kind`, `author`. `sort`: `relevancia` (con `q`), `populares` (votos de los últimos 30 días), `votos`, `recientes`, `lecturas`. Con sesión aplica la edad y las etiquetas bloqueadas |
 | `GET /stories/:slug` | Ficha de una historia |
 | `GET /stories/:slug/chapters` | Índice de capítulos publicados |
 | `GET /stories/:slug/chapters/:n` | Un capítulo con su contenido. `n` cuenta solo lo publicado: los borradores no dejan huecos |
-| `GET /tags` | Autocompletar etiquetas de historias visibles. Admite `q`, `kind` (`fandom`, `personaje`, `relacion`, `tropo`, `advertencia`, `libre`), `limit` |
+| `GET /tags` | Autocompletar etiquetas de historias visibles, por categoría (`kind`: `fandom`, `personaje`, `relacion`, `tropo`, `advertencia`, `libre`) o de todas; sin `q`, las más usadas. Admite `limit` |
+| `GET /tags/:slug/sections` | Lo nuevo y lo popular con esa etiqueta (`nuevas`, `populares`). Admite `limit` |
 | `GET /profiles/:handle` | Perfil público: `handle`, `name`, `bio`, `link`, `avatarUrl`, `bannerUrl`, `createdAt`. Nunca el correo ni la fecha de nacimiento |
 
 Con sesión: la web la manda en la cookie HttpOnly `ink_at` (y entonces los cambios solo se aceptan desde un origen de `CORS_ORIGINS`); la app nativa, en `Authorization: Bearer <access_token de Supabase>`. Se rechazan cuentas sin correo confirmado.
@@ -86,6 +87,9 @@ Con sesión: la web la manda en la cookie HttpOnly `ink_at` (y entonces los camb
 | `GET /me/library` | Tu repisa |
 | `PUT /me/library/:slug` | Guarda la historia o actualiza el capítulo por el que vas |
 | `DELETE /me/library/:slug` | La quita de la repisa |
+| `GET /me/blocked-tags` | Tus etiquetas bloqueadas |
+| `PUT /me/blocked-tags` | Bloquea una etiqueta que ya existe: `{ kind, slug }`. Idempotente, hasta 50. Devuelve la lista |
+| `DELETE /me/blocked-tags/:kind/:slug` | La desbloquea |
 
 ## Clasificación por edad
 
@@ -98,6 +102,7 @@ Lo que se lee pasa por una sola función, `visibleTo` (`src/visibility/visibilit
 | Mayor de edad | Hasta +16; +18 si activó `showMature` en Ajustes |
 
 - La autora siempre ve lo suyo, aunque su edad no alcance la clasificación.
+- Las etiquetas bloqueadas (`listedFor`) esconden historias de listas y búsquedas; el enlace directo sigue abriendo.
 - Lo que no le toca responde 404, igual que si no existiera.
 - Caché: sin sesión, `Cache-Control: public` (es lo apto para cualquier edad); con sesión, `private, no-store`. Los capítulos nunca se cachean. Siempre `Vary: Cookie, Authorization`.
 - Una sesión vencida en una ruta pública responde 401 (no se trata como lectura sin cuenta), para que el cliente la renueve.

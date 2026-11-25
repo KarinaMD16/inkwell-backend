@@ -9,25 +9,7 @@ export const RATINGS = ['Todo público', '+13', '+16', '+18'] as const;
 export const STATUSES = ['En curso', 'En pausa', 'Completa'] as const;
 export const LICENSES = ['Todos los derechos reservados', 'CC BY', 'CC BY-NC', 'CC BY-NC-ND', 'Dominio público'] as const;
 
-/** Lista separada por comas en la URL: "slow-burn, Found family" -> ["slow-burn", "Found family"]. */
-const csv = z.string().max(400).transform((s) => s.split(',').map((x) => x.trim()).filter(Boolean)).pipe(z.array(z.string().max(60)).max(10));
-
-export const listSchema = z.object({
-  q: z.string().trim().max(80).optional(),
-  genre: z.string().max(40).optional(),
-  kind: z.enum(KINDS).optional(),
-  rating: z.enum(RATINGS).optional(),
-  status: z.enum(STATUSES).optional(),
-  author: z.string().max(24).optional(),
-  /** Etiquetas que la historia debe tener (todas). */
-  tags: csv.optional(),
-  /** Etiquetas que la historia no puede tener (ninguna). */
-  exclude: csv.optional(),
-  sort: z.enum(['votos', 'recientes', 'lecturas']).default('recientes'),
-  limit: z.coerce.number().int().min(1).max(50).default(24),
-  offset: z.coerce.number().int().min(0).default(0),
-});
-export type ListQuery = z.infer<typeof listSchema>;
+// La búsqueda de Explorar (GET /stories) está en discovery/discovery.schemas.ts.
 
 /** Lista de etiquetas sin repetidas ("Slow burn" y "slow burn" cuentan como una). */
 const tagList = (max: number, length = 40) =>
@@ -127,9 +109,3 @@ export type PublishChapter = z.infer<typeof publishSchema>;
 export const orderSchema = z.object({ ids: z.array(z.uuid()).min(1).max(2000) });
 export type ChapterOrder = z.infer<typeof orderSchema>;
 
-export const tagSearchSchema = z.object({
-  q: z.string().trim().max(60).default(''),
-  kind: z.enum(['fandom', 'personaje', 'relacion', 'tropo', 'advertencia', 'libre']).optional(),
-  limit: z.coerce.number().int().min(1).max(20).default(8),
-});
-export type TagSearch = z.infer<typeof tagSearchSchema>;

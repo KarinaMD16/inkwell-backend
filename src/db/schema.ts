@@ -170,6 +170,16 @@ export const storyTags = pgTable('story_tags', {
   index('story_tags_tag').on(t.tagId, t.storyId),
 ]).enableRLS();
 
+/**
+ * Etiquetas que cada persona no quiere ver (preferencia de contenido). Las historias que las
+ * llevan no salen en sus listas ni búsquedas; el enlace directo sigue abriendo. Ver visibility.ts.
+ */
+export const blockedTags = pgTable('blocked_tags', {
+  userId: uuid('user_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  tagId: uuid('tag_id').notNull().references(() => tags.id, { onDelete: 'cascade' }),
+  createdAt,
+}, (t) => [primaryKey({ columns: [t.userId, t.tagId] })]).enableRLS();
+
 /** La repisa de cada persona: historia guardada y capítulo por el que va. */
 export const library = pgTable('library', {
   userId: uuid('user_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),

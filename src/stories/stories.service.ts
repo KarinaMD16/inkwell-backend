@@ -1,13 +1,13 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { and, asc, count, desc, eq, exists, gt, ilike, inArray, max, notExists, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, max, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
-import { fold, slugify } from '../common/slug.js';
+import { slugify } from '../common/slug.js';
 import { DB, type Db } from '../db/db.module.js';
-import { chapters, profiles, stories, storyTags, tags, votes, type Block } from '../db/schema.js';
+import { chapters, profiles, stories, votes, type Block } from '../db/schema.js';
 import { processImage } from '../storage/images.js';
 import { STORAGE, type FileStorage } from '../storage/storage.js';
 import type {
-  ChapterOrder, CreateChapter, CreateStory, ListQuery, PublishChapter, UpdateChapter, UpdateStory,
+  ChapterOrder, CreateChapter, CreateStory, PublishChapter, UpdateChapter, UpdateStory,
 } from './stories.schemas.js';
 import { isLive, visibleTo, type Viewer } from '../visibility/visibility.js';
 import { recount, saveTags, tagIdsOf, type Tagged, type Tx } from './tagging.js';
@@ -39,8 +39,8 @@ export class StoriesService {
 
   // ----- lectura pública -----
 
-  /** Columnas públicas de una historia, con autor, capítulos publicados y votos. */
-  private counts() {
+  /** Capítulos publicados, votos y fecha de lo último publicado. Público: lo usa discovery para ordenar. */
+  counts() {
     const chapterCount = this.db.select({ c: count() }).from(chapters).where(and(eq(chapters.storyId, stories.id), isLive));
     const voteCount = this.db
       .select({ c: count() })
@@ -67,43 +67,16 @@ export class StoriesService {
     };
   }
 
-  private select() {
+  /**
+   * Tarjeta pública de una historia (con autora, capítulos publicados y votos), sin filtro.
+   * Punto de contacto: discovery (Explorar y búsqueda) arma sus listas con esto.
+   */
+  cards() {
     return this.db.select(this.columns()).from(stories).innerJoin(profiles, eq(stories.authorId, profiles.id));
   }
 
-  /** "Tiene esta etiqueta", sin importar la categoría: por aquí pasan los filtros de incluir y excluir. */
-  private tagged(slugs: string[]) {
-    return this.db.select({ one: sql`1` }).from(storyTags).innerJoin(tags, eq(tags.id, storyTags.tagId))
-      .where(and(eq(storyTags.storyId, stories.id), inArray(tags.slug, slugs)));
-  }
-
-  /** `viewer`: quien lee (null sin sesión). Decide qué clasificaciones le tocan; ver visibility.ts. */
-  async list(query: ListQuery, viewer: Viewer | null) {
-    // Cada palabra se busca por prefijo y sin tildes: "orb baj" encuentra "Órbita baja".
-    const terms = query.q ? fold(query.q).split(' ').filter(Boolean) : [];
-    const tsquery = terms.map((t) => `${t}:*`).join(' & ');
-    const like = query.q ? `%${query.q.replace(/[%_\\]/g, '\\$&')}%` : null;
-    const include = (query.tags ?? []).map(slugify).filter(Boolean);
-    const exclude = (query.exclude ?? []).map(slugify).filter(Boolean);
-    const where = and(
-      visibleTo(this.db, viewer),
-      query.genre ? or(eq(stories.genre, query.genre), sql`${query.genre} = any(${stories.subgenres})`) : undefined,
-      query.kind ? eq(stories.kind, query.kind) : undefined,
-      query.rating ? eq(stories.rating, query.rating) : undefined,
-      query.status ? eq(stories.status, query.status) : undefined,
-      query.author ? eq(profiles.handle, query.author) : undefined,
-      like ? or(tsquery ? sql`to_tsvector('simple', ${stories.searchText}) @@ to_tsquery('simple', ${tsquery})` : undefined, ilike(profiles.handle, like)) : undefined,
-      ...include.map((slug) => exists(this.tagged([slug]))),
-      exclude.length ? notExists(this.tagged(exclude)) : undefined,
-    );
-    const totals = this.counts();
-    const order = { votos: desc(totals.votes), recientes: desc(totals.updatedAt), lecturas: desc(stories.reads) }[query.sort];
-    const items = await this.select().where(where).orderBy(order, asc(stories.slug)).limit(query.limit).offset(query.offset);
-    return { items, limit: query.limit, offset: query.offset };
-  }
-
   async get(slug: string, viewer: Viewer | null) {
-    const [story] = await this.select().where(and(eq(stories.slug, slug), visibleTo(this.db, viewer)));
+    const [story] = await this.cards().where(and(eq(stories.slug, slug), visibleTo(this.db, viewer)));
     if (!story) throw new NotFoundException('No encontramos esa historia');
     return story;
   }
@@ -190,7 +163,7 @@ export class StoriesService {
   /** Todo lo que necesita la pantalla de gestión: la ficha completa y los capítulos con su estado. */
   async manage(userId: string, slug: string) {
     const story = await this.owned(userId, slug);
-    const [view] = await this.select().where(eq(stories.id, story.id));
+    const [view] = await this.cards().where(eq(stories.id, story.id));
     const list = await this.db
       .select({ id: chapters.id, n: chapters.n, title: chapters.title, badge: chapters.badge, words: chapters.words, publishedAt: chapters.publishedAt, updatedAt: chapters.updatedAt })
       .from(chapters)

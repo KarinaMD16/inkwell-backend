@@ -16,6 +16,8 @@ export interface AuthDirectory {
   lookup(ids: string[]): Promise<Map<string, AccountInfo>>;
   /** Ids de las cuentas cuyo correo contiene el texto. */
   findByEmail(text: string): Promise<string[]>;
+  /** La cuenta sigue existiendo (un token de una cuenta ya borrada vale hasta que vence). */
+  exists(id: string): Promise<boolean>;
 }
 export const AUTH_DIRECTORY = Symbol('AUTH_DIRECTORY');
 
@@ -42,6 +44,10 @@ export class SqlAuthDirectory implements AuthDirectory {
       });
     }
     return found;
+  }
+
+  async exists(id: string): Promise<boolean> {
+    return rowsOf(await this.db.execute(sql`select 1 from auth.users where id = ${id}::uuid`)).length > 0;
   }
 
   async findByEmail(text: string): Promise<string[]> {

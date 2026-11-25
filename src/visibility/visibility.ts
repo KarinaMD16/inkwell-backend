@@ -1,6 +1,6 @@
 import { and, eq, exists, inArray, isNotNull, isNull, lte, notExists, or, sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../db/db.module.js';
-import { chapters, profiles, stories } from '../db/schema.js';
+import { blockedTags, chapters, profiles, stories, storyTags } from '../db/schema.js';
 import { ageFrom } from '../me/profile.schemas.js';
 import { RATINGS } from '../stories/stories.schemas.js';
 
@@ -9,7 +9,9 @@ import { RATINGS } from '../stories/stories.schemas.js';
  * ficha, índice, capítulo, votos, repisa) filtra con `visibleTo`, así la regla vive en un solo
  * lugar (regla 17: el contenido se filtra en el servidor, no se esconde en la interfaz).
  *
- * Hoy decide por edad. Las etiquetas bloqueadas y los bloqueos entre cuentas se suman aquí.
+ * - `visibleTo`: puede abrirla (ficha, índice, capítulo, votos, repisa). Decide la edad.
+ * - `listedFor`: además sale en sus listas y búsquedas. Suma sus etiquetas bloqueadas.
+ * Los bloqueos entre cuentas se suman aquí cuando existan.
  */
 
 export type Rating = (typeof RATINGS)[number];
@@ -62,4 +64,16 @@ export function ratingAllowed(viewer: Viewer | null): SQL {
 /** Lo que esta persona (o alguien sin cuenta, con `null`) puede ver. */
 export function visibleTo(db: Db, viewer: Viewer | null, opts: { needsChapter?: boolean } = {}): SQL {
   return and(isPublic(db, opts.needsChapter ?? true), ratingAllowed(viewer))!;
+}
+
+/**
+ * Sale en las listas y búsquedas de esta persona: la puede ver y no lleva ninguna etiqueta que
+ * bloqueó en Ajustes. Lo propio sale siempre.
+ */
+export function listedFor(db: Db, viewer: Viewer | null): SQL {
+  if (!viewer) return visibleTo(db, null);
+  const blocked = db.select({ one: sql`1` }).from(storyTags)
+    .innerJoin(blockedTags, eq(blockedTags.tagId, storyTags.tagId))
+    .where(and(eq(storyTags.storyId, stories.id), eq(blockedTags.userId, viewer.id)));
+  return and(visibleTo(db, viewer), or(notExists(blocked), eq(stories.authorId, viewer.id)))!;
 }
