@@ -71,6 +71,13 @@
       "when": 1795652615272,
       "tag": "0009_ids_de_parrafo",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795658816941,
+      "tag": "0010_preferencias_de_lectura",
+      "breakpoints": true
     }
   ]
 }

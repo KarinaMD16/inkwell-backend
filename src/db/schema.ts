@@ -238,6 +238,29 @@ export const votes = pgTable('votes', {
   createdAt,
 }, (t) => [primaryKey({ columns: [t.userId, t.chapterId] })]).enableRLS();
 
+export const READER_SPACINGS = ['justo', 'normal', 'amplio'] as const;
+export const READER_THEMES = ['claro', 'sepia', 'oscuro'] as const;
+export const READER_SIZE = { min: 15, max: 26 } as const;
+
+/**
+ * Cómo le gusta leer a cada persona (los ajustes "Aa" del lector), para que se vean igual en
+ * todos sus dispositivos. Una fila por cuenta; sin fila, el lector usa sus valores por defecto.
+ */
+export const readingPrefs = pgTable('reading_prefs', {
+  userId: uuid('user_id').primaryKey().references(() => profiles.id, { onDelete: 'cascade' }),
+  /** Tamaño de la letra del capítulo, en px. */
+  size: integer('size').notNull().default(19),
+  /** true: Literata (con serifa); false: la letra de la interfaz. */
+  serif: boolean('serif').notNull().default(true),
+  spacing: text('spacing').$type<(typeof READER_SPACINGS)[number]>().notNull().default('normal'),
+  theme: text('theme').$type<(typeof READER_THEMES)[number]>().notNull().default('claro'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  check('reading_prefs_size_check', sql`${t.size} between 15 and 26`),
+  check('reading_prefs_spacing_check', sql`${t.spacing} in ('justo', 'normal', 'amplio')`),
+  check('reading_prefs_theme_check', sql`${t.theme} in ('claro', 'sepia', 'oscuro')`),
+]).enableRLS();
+
 /**
  * Lo que hizo moderación y administración, para poder revisarlo después. `target` es el id del
  * perfil o el slug de la historia; queda aunque lo afectado se borre.

@@ -3,7 +3,7 @@ import { asc, eq, inArray } from 'drizzle-orm';
 import { ACCOUNT_ADMIN, type AccountAdmin } from '../auth/auth-admin.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { DB, type Db } from '../db/db.module.js';
-import { chapters, library, profiles, stories, votes } from '../db/schema.js';
+import { chapters, library, profiles, readingPrefs, stories, votes } from '../db/schema.js';
 import { recount, tagIdsOfAuthor } from '../stories/tagging.js';
 import { STORAGE, type FileStorage } from '../storage/storage.js';
 
@@ -67,6 +67,9 @@ export class AccountsService {
       .select({ historia: stories.slug, capitulo: chapters.title, fecha: votes.createdAt })
       .from(votes).innerJoin(chapters, eq(chapters.id, votes.chapterId)).innerJoin(stories, eq(stories.id, chapters.storyId))
       .where(eq(votes.userId, user.id));
+    const [lector] = await this.db
+      .select({ tamano: readingPrefs.size, serifa: readingPrefs.serif, interlineado: readingPrefs.spacing, tema: readingPrefs.theme })
+      .from(readingPrefs).where(eq(readingPrefs.userId, user.id));
 
     return {
       exportado: new Date().toISOString(),
@@ -89,6 +92,7 @@ export class AccountsService {
       })),
       repisa: shelf,
       votos: voted,
+      lector: lector ?? null,
     };
   }
 }
