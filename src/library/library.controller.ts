@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, HttpCode, Inject, NotFoundException, Param, Patch, Put, UseGuards } from '@nestjs/common';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { BLOCK_ID } from '../stories/block-ids.js';
 import { z } from 'zod';
 import { AuthGuard, CurrentUser } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.service.js';
@@ -10,7 +11,11 @@ import { MeService } from '../me/me.service.js';
 import { visibleTo } from '../visibility/visibility.js';
 
 const saveSchema = z.object({ chapter: z.number().int().min(1).default(1) });
-const progressSchema = z.object({ chapter: z.number().int().min(1) });
+const progressSchema = z.strictObject({
+  chapter: z.number().int().min(1),
+  /** El párrafo por el que vas dentro del capítulo. Sin él, se conserva el que había si sigues en el mismo capítulo. */
+  block: z.string().regex(BLOCK_ID, 'Párrafo inválido').nullable().optional(),
+});
 
 /** La repisa de la persona: qué historias guardó y por qué capítulo va en cada una. */
 @Controller('me/library')
@@ -24,7 +29,7 @@ export class LibraryController {
   @Get()
   list(@CurrentUser() user: AuthUser) {
     return this.db
-      .select({ slug: stories.slug, title: stories.title, author: profiles.handle, color: stories.color, ink: stories.ink, art: stories.art, cover: stories.coverUrl, spine: stories.spine, spineImage: stories.spineUrl, chapter: library.chapter, updatedAt: library.updatedAt })
+      .select({ slug: stories.slug, title: stories.title, author: profiles.handle, color: stories.color, ink: stories.ink, art: stories.art, cover: stories.coverUrl, spine: stories.spine, spineImage: stories.spineUrl, chapter: library.chapter, block: library.blockId, updatedAt: library.updatedAt })
       .from(library)
       .innerJoin(stories, eq(library.storyId, stories.id))
       .innerJoin(profiles, eq(stories.authorId, profiles.id))
@@ -55,12 +60,17 @@ export class LibraryController {
   @Patch(':slug')
   async progress(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @Body(new ZodPipe(progressSchema)) body: z.infer<typeof progressSchema>) {
     const story = this.db.select({ id: stories.id }).from(stories).where(eq(stories.slug, slug));
+    // Al abrir un capítulo llega solo `chapter`: si es el mismo, se respeta el párrafo guardado
+    // (así "Seguir donde lo dejé" no se borra al entrar); si es otro, se empieza desde arriba.
+    const blockId = body.block !== undefined
+      ? body.block
+      : sql<string | null>`case when ${library.chapter} = ${body.chapter} then ${library.blockId} else null end`;
     const updated = await this.db
       .update(library)
-      .set({ chapter: body.chapter, updatedAt: new Date() })
+      .set({ chapter: body.chapter, blockId, updatedAt: new Date() })
       .where(and(eq(library.userId, user.id), inArray(library.storyId, story)))
-      .returning({ chapter: library.chapter });
-    return { slug, chapter: body.chapter, saved: updated.length > 0 };
+      .returning({ chapter: library.chapter, block: library.blockId });
+    return { slug, chapter: body.chapter, block: updated[0]?.block ?? null, saved: updated.length > 0 };
   }
 
   @Delete(':slug')

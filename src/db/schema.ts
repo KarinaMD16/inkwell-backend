@@ -229,6 +229,12 @@ export const library = pgTable('library', {
   userId: uuid('user_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
   storyId: uuid('story_id').notNull().references(() => stories.id, { onDelete: 'cascade' }),
   chapter: integer('chapter').notNull().default(1),
+  /**
+   * El párrafo (id de bloque, ver stories/block-ids.ts) por el que iba dentro de `chapter`, para
+   * "Seguir donde lo dejé". null: el principio del capítulo. Si la autora borra ese párrafo, el
+   * lector simplemente no lo encuentra y abre desde arriba.
+   */
+  blockId: text('block_id'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({ columns: [t.userId, t.storyId] })]).enableRLS();
 
