@@ -275,6 +275,21 @@ export const readingListItems = pgTable('reading_list_items', {
   index('reading_list_items_story').on(t.storyId),
 ]).enableRLS();
 
+/**
+ * Quién sigue a quién. Seguir a una autora es lo que, más adelante, hace llegar el aviso de
+ * "capítulo nuevo". Nadie se sigue a sí mismo.
+ */
+export const follows = pgTable('follows', {
+  followerId: uuid('follower_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  followedId: uuid('followed_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  createdAt,
+}, (t) => [
+  primaryKey({ columns: [t.followerId, t.followedId] }),
+  // Para contar seguidores y, después, avisarles: se busca por a quién siguen.
+  index('follows_followed').on(t.followedId),
+  check('follows_not_self', sql`${t.followerId} <> ${t.followedId}`),
+]).enableRLS();
+
 export const READER_SPACINGS = ['justo', 'normal', 'amplio'] as const;
 export const READER_THEMES = ['claro', 'sepia', 'oscuro'] as const;
 export const READER_SIZE = { min: 15, max: 26 } as const;

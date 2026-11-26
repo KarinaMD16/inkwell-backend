@@ -92,6 +92,13 @@
       "when": 1795662992183,
       "tag": "0012_listas_de_lectura",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795666005090,
+      "tag": "0013_seguir_autores",
+      "breakpoints": true
     }
   ]
 }

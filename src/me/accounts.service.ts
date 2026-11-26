@@ -3,7 +3,7 @@ import { asc, eq, inArray } from 'drizzle-orm';
 import { ACCOUNT_ADMIN, type AccountAdmin } from '../auth/auth-admin.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { DB, type Db } from '../db/db.module.js';
-import { chapters, library, profiles, readingListItems, readingLists, readingPrefs, stories, votes } from '../db/schema.js';
+import { chapters, follows, library, profiles, readingListItems, readingLists, readingPrefs, stories, votes } from '../db/schema.js';
 import { recount, tagIdsOfAuthor } from '../stories/tagging.js';
 import { STORAGE, type FileStorage } from '../storage/storage.js';
 
@@ -70,6 +70,9 @@ export class AccountsService {
     const [lector] = await this.db
       .select({ tamano: readingPrefs.size, serifa: readingPrefs.serif, interlineado: readingPrefs.spacing, tema: readingPrefs.theme })
       .from(readingPrefs).where(eq(readingPrefs.userId, user.id));
+    const followed = await this.db.select({ usuario: profiles.handle, desde: follows.createdAt })
+      .from(follows).innerJoin(profiles, eq(profiles.id, follows.followedId))
+      .where(eq(follows.followerId, user.id)).orderBy(asc(follows.createdAt));
     const myLists = await this.db.select({ id: readingLists.id, nombre: readingLists.name, publica: readingLists.isPublic, creada: readingLists.createdAt })
       .from(readingLists).where(eq(readingLists.userId, user.id)).orderBy(asc(readingLists.createdAt));
     const listed = myLists.length
@@ -100,6 +103,7 @@ export class AccountsService {
       repisa: shelf,
       votos: voted,
       lector: lector ?? null,
+      sigues: followed,
       listas: myLists.map(({ id, ...l }) => ({ ...l, historias: listed.filter((i) => i.lista === id).map(({ lista: _lista, ...i }) => i) })),
     };
   }
