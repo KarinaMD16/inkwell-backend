@@ -1,9 +1,9 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { ACCOUNT_ADMIN, type AccountAdmin } from '../auth/auth-admin.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { DB, type Db } from '../db/db.module.js';
-import { chapters, follows, library, profiles, readingListItems, readingLists, readingPrefs, stories, votes } from '../db/schema.js';
+import { chapters, comments, follows, library, profiles, readingListItems, readingLists, readingPrefs, stories, votes } from '../db/schema.js';
 import { recount, tagIdsOfAuthor } from '../stories/tagging.js';
 import { STORAGE, type FileStorage } from '../storage/storage.js';
 
@@ -73,6 +73,10 @@ export class AccountsService {
     const followed = await this.db.select({ usuario: profiles.handle, desde: follows.createdAt })
       .from(follows).innerJoin(profiles, eq(profiles.id, follows.followedId))
       .where(eq(follows.followerId, user.id)).orderBy(asc(follows.createdAt));
+    const said = await this.db
+      .select({ historia: stories.slug, capitulo: chapters.title, parrafo: comments.blockId, texto: comments.body, fecha: comments.createdAt, editado: comments.editedAt })
+      .from(comments).innerJoin(chapters, eq(chapters.id, comments.chapterId)).innerJoin(stories, eq(stories.id, chapters.storyId))
+      .where(and(eq(comments.authorId, user.id), isNull(comments.deletedAt))).orderBy(asc(comments.createdAt));
     const myLists = await this.db.select({ id: readingLists.id, nombre: readingLists.name, publica: readingLists.isPublic, creada: readingLists.createdAt })
       .from(readingLists).where(eq(readingLists.userId, user.id)).orderBy(asc(readingLists.createdAt));
     const listed = myLists.length
@@ -104,6 +108,7 @@ export class AccountsService {
       votos: voted,
       lector: lector ?? null,
       sigues: followed,
+      comentarios: said,
       listas: myLists.map(({ id, ...l }) => ({ ...l, historias: listed.filter((i) => i.lista === id).map(({ lista: _lista, ...i }) => i) })),
     };
   }

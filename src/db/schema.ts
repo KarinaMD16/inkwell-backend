@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
-  boolean, check, date, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid,
+  type AnyPgColumn, boolean, check, date, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid,
 } from 'drizzle-orm/pg-core';
 
 /**
@@ -288,6 +288,31 @@ export const follows = pgTable('follows', {
   // Para contar seguidores y, después, avisarles: se busca por a quién siguen.
   index('follows_followed').on(t.followedId),
   check('follows_not_self', sql`${t.followerId} <> ${t.followedId}`),
+]).enableRLS();
+
+/** Largo máximo de un comentario (regla 7). */
+export const COMMENT_MAX = 2000;
+
+/**
+ * Comentarios de un capítulo. Con `blockId` es un comentario de párrafo (el id estable del bloque,
+ * ver stories/block-ids.ts); sin él, del capítulo entero. Las respuestas cuelgan de un comentario
+ * principal (`parentId`), en un solo nivel. Un comentario que tiene respuestas no se borra de la base:
+ * se vacía y se marca (`deletedAt`) para que la conversación siga teniendo sentido.
+ */
+export const comments = pgTable('comments', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  chapterId: uuid('chapter_id').notNull().references(() => chapters.id, { onDelete: 'cascade' }),
+  authorId: uuid('author_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  parentId: uuid('parent_id').references((): AnyPgColumn => comments.id, { onDelete: 'cascade' }),
+  blockId: text('block_id'),
+  body: text('body').notNull(),
+  createdAt,
+  editedAt: timestamp('edited_at', { withTimezone: true }),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+}, (t) => [
+  index('comments_chapter').on(t.chapterId, t.createdAt),
+  index('comments_parent').on(t.parentId),
+  check('comments_body_check', sql`char_length(${t.body}) <= 2000`),
 ]).enableRLS();
 
 export const READER_SPACINGS = ['justo', 'normal', 'amplio'] as const;
