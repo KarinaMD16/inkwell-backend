@@ -1,8 +1,8 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { and, asc, count, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, notInArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { DB, type Db } from '../db/db.module.js';
-import { COMMENT_MAX, comments, profiles } from '../db/schema.js';
+import { COMMENT_MAX, comments, profiles, type Block } from '../db/schema.js';
 import { BLOCK_ID } from '../stories/block-ids.js';
 import { StoriesService } from '../stories/stories.service.js';
 import type { Viewer } from '../visibility/visibility.js';
@@ -53,17 +53,13 @@ export class CommentsService {
    * (las más viejas primero, como una conversación). Con `block`, solo los de ese párrafo.
    */
   async list(slug: string, n: number, viewer: Viewer | null, opts: { block?: string; page: number }) {
-    const { chapterId, authorId: storyAuthor } = await this.stories.readableChapter(slug, n, viewer);
-    const where = and(
-      eq(comments.chapterId, chapterId), isNull(comments.parentId),
-      opts.block ? eq(comments.blockId, opts.block) : undefined,
-    );
+    const { chapterId, content, authorId: storyAuthor } = await this.stories.readableChapter(slug, n, viewer);
+    const scope = this.scope(content, opts.block);
+    const where = and(eq(comments.chapterId, chapterId), isNull(comments.parentId), scope);
     const [roots, [{ total }]] = await Promise.all([
       this.rows().where(where).orderBy(desc(comments.createdAt)).limit(COMMENTS_PAGE + 1).offset(opts.page * COMMENTS_PAGE),
       // El total cuenta también las respuestas: es el número que se ve junto a "Comentarios".
-      this.db.select({ total: count() }).from(comments).where(and(
-        eq(comments.chapterId, chapterId), isNull(comments.deletedAt), opts.block ? eq(comments.blockId, opts.block) : undefined,
-      )),
+      this.db.select({ total: count() }).from(comments).where(and(eq(comments.chapterId, chapterId), isNull(comments.deletedAt), scope)),
     ]);
     const more = roots.length > COMMENTS_PAGE;
     const shown = roots.slice(0, COMMENTS_PAGE);
@@ -83,7 +79,8 @@ export class CommentsService {
 
   /** Cuántos comentarios tiene cada párrafo del capítulo (para los globitos del lector). */
   async counts(slug: string, n: number, viewer: Viewer | null) {
-    const { chapterId } = await this.stories.readableChapter(slug, n, viewer);
+    const { chapterId, content } = await this.stories.readableChapter(slug, n, viewer);
+    const alive = new Set(content.flatMap((b) => (b.id ? [b.id] : [])));
     const rows = await this.db.select({ block: comments.blockId, c: count() }).from(comments)
       .where(and(eq(comments.chapterId, chapterId), isNull(comments.deletedAt)))
       .groupBy(comments.blockId);
@@ -91,7 +88,7 @@ export class CommentsService {
     let total = 0;
     for (const r of rows) {
       total += r.c;
-      if (r.block) byBlock[r.block] = r.c;
+      if (r.block && alive.has(r.block)) byBlock[r.block] = r.c;
     }
     return { total, byBlock };
   }
@@ -136,6 +133,16 @@ export class CommentsService {
     const [{ c }] = await this.db.select({ c: count() }).from(comments).where(eq(comments.parentId, id));
     if (c > 0) await this.db.update(comments).set({ body: '', deletedAt: new Date() }).where(eq(comments.id, id));
     else await this.db.delete(comments).where(eq(comments.id, id));
+  }
+
+  /**
+   * Qué comentarios entran: con `block`, los de ese párrafo; sin él, los del capítulo entero más los
+   * de párrafos que la autora ya borró (así no se pierden: pasan a ser del capítulo).
+   */
+  private scope(content: Block[], block?: string) {
+    if (block) return eq(comments.blockId, block);
+    const ids = content.flatMap((b) => (b.id ? [b.id] : []));
+    return ids.length ? or(isNull(comments.blockId), notInArray(comments.blockId, ids)) : undefined;
   }
 
   private rows() {
