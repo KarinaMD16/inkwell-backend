@@ -28,7 +28,8 @@ export class AccountsService {
    */
   async delete(id: string): Promise<void> {
     const [profile] = await this.db.select().from(profiles).where(eq(profiles.id, id));
-    const covers = (await this.db.select({ url: stories.coverUrl }).from(stories).where(eq(stories.authorId, id))).map((r) => r.url);
+    const covers = (await this.db.select({ cover: stories.coverUrl, spine: stories.spineUrl }).from(stories).where(eq(stories.authorId, id)))
+      .flatMap((r) => [r.cover, r.spine]);
     // Primero la cuenta: sin ella nadie puede volver a entrar. Si después fallara la base, el perfil
     // huérfano lo limpia `npm run db:limpiar-muestra` (busca perfiles sin cuenta).
     await this.accounts.deleteUser(id);
@@ -72,11 +73,11 @@ export class AccountsService {
       cuenta: { id: user.id, correo: user.email },
       perfil: {
         usuario: profile.handle, nombre: profile.name, presentacion: profile.bio, enlace: profile.link,
-        foto: profile.avatarUrl, portada: profile.bannerUrl, nacimiento: profile.birthdate, verMas18: profile.showMature, rol: profile.role,
+        foto: profile.avatarUrl, portada: profile.bannerUrl, nacimiento: profile.birthdate, verMas18: profile.showMature, gustos: profile.interests, rol: profile.role,
         creado: profile.createdAt,
       },
       historias: own.map((s) => ({
-        slug: s.slug, titulo: s.title, frase: s.tagline, sinopsis: s.synopsis, portada: s.coverUrl, tipo: s.kind,
+        slug: s.slug, titulo: s.title, frase: s.tagline, sinopsis: s.synopsis, portada: s.coverUrl, lomo: { ...s.spine, imagen: s.spineUrl }, tipo: s.kind,
         genero: s.genre, subgeneros: s.subgenres, fandom: s.fandom, relacion: s.relation, personajes: s.characters,
         tropos: s.tropes, advertencias: s.warnings, etiquetas: s.freeTags, clasificacion: s.rating, estado: s.status,
         formato: s.format, licencia: s.license, idioma: s.language, publicada: s.published, lecturas: s.reads,

@@ -4,6 +4,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { eq } from 'drizzle-orm';
 import type { Request } from 'express';
+import { originChecker } from '../common/origins.js';
 import { ENV, type Env } from '../config/env.js';
 import { DB, type Db } from '../db/db.module.js';
 import { profiles, ROLES, type Role } from '../db/schema.js';
@@ -59,7 +60,7 @@ export function cookie(req: Request, name: string): string | null {
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
-  private readonly origins: Set<string>;
+  private readonly fromInkwell: (origin: string | undefined) => boolean;
   private readonly admins: Set<string>;
 
   constructor(
@@ -68,7 +69,7 @@ export class AuthGuard implements CanActivate {
     @Inject(Reflector) private readonly reflector: Reflector,
     @Inject(ENV) private readonly env: Env,
   ) {
-    this.origins = new Set(env.CORS_ORIGINS.split(',').map((o) => o.trim()));
+    this.fromInkwell = originChecker(env);
     this.admins = adminEmails(env);
   }
 
@@ -77,7 +78,7 @@ export class AuthGuard implements CanActivate {
     let token = bearer(req);
     if (!token) {
       token = cookie(req, this.env.AUTH_COOKIE);
-      if (token && !SAFE_METHODS.has(req.method) && !this.origins.has(String(req.headers.origin ?? ''))) {
+      if (token && !SAFE_METHODS.has(req.method) && !this.fromInkwell(req.headers.origin)) {
         throw new ForbiddenException('Esta acción solo se puede hacer desde Inkwell.');
       }
     }

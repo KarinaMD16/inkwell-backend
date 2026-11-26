@@ -18,15 +18,29 @@ export type Align = 'left' | 'center' | 'right' | 'justify';
  * El párrafo guarda su texto plano en `text` (sobre eso se cuenta y se busca) y el formato aparte,
  * en `marks` y `align`. Un párrafo sin formato es solo { type, text }.
  */
-export type Block =
+export type Block = (
   | { type: 'p'; text: string; align?: Align; marks?: Mark[] }
   | { type: 'chat'; title: string; messages: { who: string; text: string; me?: boolean }[] }
   | { type: 'post'; author: string; text: string }
   | { type: 'ficha'; name: string; tags: string[]; text: string }
-  | { type: 'interludio'; text: string };
+  | { type: 'interludio'; text: string }
+) & {
+  /** Id estable del bloque, el ancla de los comentarios por párrafo (ver stories/block-ids.ts). */
+  id?: string;
+};
 
 /** Tipografía y adorno del título de un capítulo. El título se guarda como texto normal. */
 export type TitleStyle = { face: 'redonda' | 'novela' | 'maquina'; ornament: 'ninguno' | 'sparkle' | 'heart' | 'moon' };
+/**
+ * Diseño del lomo en la repisa. `source`: de qué está hecho (el color de la historia, la imagen de
+ * portada que continúa por el lomo, o una imagen propia en `spine_url`). La textura y el adorno van encima.
+ */
+export type SpineStyle = {
+  source: 'color' | 'portada' | 'imagen';
+  texture: 'lisa' | 'tela' | 'cuero' | 'lino' | 'papel';
+  ornament: 'ninguno' | 'bandas' | 'filete' | 'marco';
+};
+export const DEFAULT_SPINE: SpineStyle = { source: 'color', texture: 'lisa', ornament: 'ninguno' };
 
 const createdAt = timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 
@@ -45,6 +59,8 @@ const createdAt = timestamp('created_at', { withTimezone: true }).notNull().defa
 export const ROLES = ['lector', 'moderador', 'admin'] as const;
 export type Role = (typeof ROLES)[number];
 
+const textArray = (name: string) => text(name).array().notNull().default(sql`'{}'::text[]`);
+
 export const profiles = pgTable('profiles', {
   id: uuid('id').primaryKey(),
   handle: text('handle').notNull().unique(),
@@ -59,6 +75,8 @@ export const profiles = pgTable('profiles', {
   birthdate: date('birthdate'),
   /** Quiere ver +18. Solo cuenta si es mayor de edad (ver visibility/visibility.ts). Privado, como la fecha. */
   showMature: boolean('show_mature').notNull().default(false),
+  /** Lo que le gusta leer (géneros y fanfic), elegido en la bienvenida. Privado: sirve para recomendar. */
+  interests: textArray('interests'),
   /** lector, moderador o admin. Ver ROLES. */
   role: text('role').$type<Role>().notNull().default('lector'),
   /** Con fecha, la cuenta está suspendida: no puede escribir y su perfil e historias no se ven. */
@@ -67,8 +85,6 @@ export const profiles = pgTable('profiles', {
   createdAt,
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [check('profiles_role_check', sql`${t.role} in ('lector', 'moderador', 'admin')`)]).enableRLS();
-
-const textArray = (name: string) => text(name).array().notNull().default(sql`'{}'::text[]`);
 
 /**
  * Una historia. Las etiquetas viven en dos sitios a propósito:
@@ -89,6 +105,9 @@ export const stories = pgTable('stories', {
   color: text('color').notNull().default('#0F8B80'),
   ink: text('ink').notNull().default('#FFFBF8'),
   art: text('art').notNull().default('sun'),
+  spine: jsonb('spine').$type<SpineStyle>().notNull().default(DEFAULT_SPINE),
+  /** Imagen propia del lomo (webp, angosta y alta). Solo se usa con spine.source = 'imagen'. */
+  spineUrl: text('spine_url'),
   /** Original, Fanfic, Poesía o No ficción. Solo un fanfic lleva fandom. */
   kind: text('kind').notNull().default('Original'),
   /** Género principal: el que se ve en la tarjeta. */
@@ -134,9 +153,34 @@ export const chapters = pgTable('chapters', {
   words: integer('words').notNull().default(0),
   /** null = borrador. Una fecha futura = programado. */
   publishedAt: timestamp('published_at', { withTimezone: true }),
+  /**
+   * Sube en 1 con cada guardado. Quien guarda dice sobre qué versión trabajó: si no es la última
+   * (otra pestaña u otro dispositivo guardó antes), la API no pisa nada y responde 409.
+   */
+  revision: integer('revision').notNull().default(1),
   createdAt,
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex('chapters_story_n').on(t.storyId, t.n)]).enableRLS();
+
+/**
+ * Historial de un capítulo: copias de cómo estaba antes de un cambio, para poder volver atrás.
+ * Una por sesión de escritura y las de seguridad (publicar, borrado grande, conflicto, restaurar);
+ * como máximo 10 por capítulo. Las reglas están en stories/chapter-versions.ts.
+ */
+export const VERSION_REASONS = ['sesion', 'publicar', 'restaurar', 'recorte', 'conflicto'] as const;
+export type VersionReason = (typeof VERSION_REASONS)[number];
+export const chapterVersions = pgTable('chapter_versions', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  chapterId: uuid('chapter_id').notNull().references(() => chapters.id, { onDelete: 'cascade' }),
+  /** La revisión del capítulo que se copió. */
+  revision: integer('revision').notNull(),
+  title: text('title').notNull(),
+  titleStyle: jsonb('title_style').$type<TitleStyle>(),
+  content: jsonb('content').$type<Block[]>().notNull(),
+  words: integer('words').notNull().default(0),
+  reason: text('reason').$type<VersionReason>().notNull(),
+  createdAt,
+}, (t) => [index('chapter_versions_chapter_created').on(t.chapterId, t.createdAt)]).enableRLS();
 
 /** Categorías de etiqueta. Cada una es una faceta distinta del buscador. */
 export const TAG_KINDS = ['genero', 'fandom', 'personaje', 'relacion', 'tropo', 'advertencia', 'libre'] as const;

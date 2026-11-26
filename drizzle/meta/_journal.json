@@ -43,6 +43,34 @@
       "when": 1795623366172,
       "tag": "0005_etiquetas_bloqueadas",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795631977496,
+      "tag": "0006_gustos_de_lectura",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795634266675,
+      "tag": "0007_lomo",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795639523215,
+      "tag": "0008_historial_de_versiones",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795652615272,
+      "tag": "0009_ids_de_parrafo",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { SignJWT } from 'jose';
@@ -8,7 +9,10 @@ import request from 'supertest';
 import type { App } from 'supertest/types.js';
 import { AppModule } from '../src/app.module.js';
 import { ENV, type Env } from '../src/config/env.js';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DB } from '../src/db/db.module.js';
+import { configureBody } from '../src/http.js';
+import { originChecker } from '../src/common/origins.js';
 import * as schema from '../src/db/schema.js';
 import { S3Storage, STORAGE, type FileStorage } from '../src/storage/storage.js';
 import { ACCOUNT_ADMIN, type AccountAdmin } from '../src/auth/auth-admin.js';
@@ -21,7 +25,7 @@ const SECRET = 'secreto-de-prueba-con-suficiente-longitud';
 const env: Env = {
   PORT: 0, DATABASE_URL: 'postgres://sin-usar', SUPABASE_URL: 'https://prueba.supabase.co',
   SUPABASE_JWT_SECRET: SECRET, CORS_ORIGINS: 'http://localhost:3000', STORAGE_REGION: 'auto',
-  AUTH_COOKIE: 'ink_at', TRUST_PROXY: 0, RATE_LIMIT_PER_MINUTE: 300, ADMIN_EMAILS: 'admin@example.com',
+  AUTH_COOKIE: 'ink_at', TRUST_PROXY: 0, RATE_LIMIT_PER_MINUTE: 300, ADMIN_EMAILS: 'admin@example.com', ALLOW_LAN_ORIGINS: false,
 };
 
 /** Almacenamiento en memoria: guarda lo subido para poder revisarlo. */
@@ -77,12 +81,13 @@ function token(sub: string, email: string, opts: { issuer?: string; secret?: str
 
 describe('Inkwell API', () => {
   let app: INestApplication<App>;
+  let db: ReturnType<typeof drizzle<typeof schema>>;
   let ana: string;
   let beto: string;
   const http = () => request(app.getHttpServer());
 
   beforeAll(async () => {
-    const db = drizzle(new PGlite(), { schema });
+    db = drizzle(new PGlite(), { schema });
     await migrate(db, { migrationsFolder: './drizzle' });
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(ENV).useValue(env)
@@ -91,7 +96,8 @@ describe('Inkwell API', () => {
       .overrideProvider(ACCOUNT_ADMIN).useValue(accountAdmin)
       .overrideProvider(AUTH_DIRECTORY).useValue(directory)
       .compile();
-    app = moduleRef.createNestApplication();
+    app = moduleRef.createNestApplication<NestExpressApplication>();
+    configureBody(app as unknown as NestExpressApplication);
     await app.init();
     // Ana se registró con correo y eligió su nombre; su fecha de nacimiento la completa después.
     ana = await token(ANA, 'ana.lee@example.com', { meta: { handle: 'ana.lee' } });
@@ -99,6 +105,15 @@ describe('Inkwell API', () => {
   });
   afterAll(async () => {
     await app.close();
+  });
+
+  it('acepta la red local solo con ALLOW_LAN_ORIGINS (para probar en el teléfono)', () => {
+    const closed = originChecker(env);
+    expect(closed('http://localhost:3000')).toBe(true);
+    expect(closed('http://192.168.1.20:3000')).toBe(false);
+    const lan = originChecker({ ...env, ALLOW_LAN_ORIGINS: true });
+    for (const ok of ['http://192.168.1.20:3000', 'http://10.0.0.5:3000', 'http://172.20.1.2:3000']) expect(lan(ok)).toBe(true);
+    for (const no of ['https://192.168.1.20:3000', 'http://8.8.8.8:3000', 'http://172.32.0.1:3000', 'http://192.168.1.20.evil.com', 'http://evil.com', undefined]) expect(lan(no)).toBe(false);
   });
 
   it('responde el estado y llega a la base', async () => {
@@ -280,6 +295,108 @@ describe('Inkwell API', () => {
       await http().get('/stories/el-coro').expect(404);
     });
 
+    it('guarda el texto tal cual: símbolos, emojis, formato y capítulos largos', async () => {
+      const ch = await http().post('/stories/el-coro/chapters').set(auth()).send({ title: 'Fidelidad' }).expect(201);
+      const url = `/me/stories/el-coro/chapters/${ch.body.id}`;
+      const tricky = '«¿Qué?» — dijo… 😊👩🏽‍💻 ñ á é ü ¡€£©™ “comillas” ‘simples’  dos espacios\tun tab\nsalto';
+      const content = [
+        { type: 'p', text: tricky, align: 'justify', marks: [[0, 7, 'i'], [8, 12, 'b'], [8, 12, 'u'], [16, 20, 'i']] },
+        { type: 'p', text: '', align: 'center' },
+        { type: 'chat', title: 'Grupo', messages: [{ who: 'Lau', text: 'a: b', me: true }, { who: '', text: 'sin nombre: con dos puntos' }] },
+        { type: 'ficha', name: 'Irene', tags: ['Libra', '17'], text: 'Faceclaim: alguien' },
+      ];
+      await http().patch(url).set(auth()).send({ content }).expect(200);
+      expect((await http().get(url).set(auth())).body.content).toMatchObject(content);
+      // Lo que la base no acepta (carácter nulo, media emoji) se cambia por algo del mismo largo: el formato no se corre.
+      await http().patch(url).set(auth()).send({ content: [{ type: 'p', text: 'a\u0000b\ud83dc', marks: [[2, 3, 'b']] }] }).expect(200);
+      expect((await http().get(url).set(auth())).body.content[0]).toEqual({ id: expect.any(String), type: 'p', text: 'a b\ufffdc', marks: [[2, 3, 'b']] });
+      // Un capítulo largo (unas 60.000 palabras, más de 100 KB) se guarda entero.
+      const long = Array.from({ length: 3000 }, (_, i) => ({ type: 'p', text: `Párrafo ${i}: ${'palabra '.repeat(20)}`, marks: [[0, 8, 'i']] }));
+      await http().patch(url).set(auth()).send({ content: long }).expect(200);
+      expect((await http().get(url).set(auth())).body.content).toHaveLength(3000);
+      await http().delete(url).set(auth()).expect(204);
+    });
+
+    it('cada párrafo tiene un id estable, único y que sobrevive al guardar y restaurar', async () => {
+      const ch = await http().post('/stories/el-coro/chapters').set(auth())
+        .send({ title: 'Ids', content: [{ type: 'p', text: 'uno' }, { type: 'chat', title: 'Chat', messages: [{ who: 'Lau', text: 'hola' }] }] }).expect(201);
+      const url = `/me/stories/el-coro/chapters/${ch.body.id}`;
+      // Sin id, la API le da uno a cada bloque (párrafos y plantillas).
+      const first = (await http().get(url).set(auth())).body.content as { id: string; text?: string }[];
+      expect(first.every((b) => /^[A-Za-z0-9_-]+$/.test(b.id))).toBe(true);
+      expect(new Set(first.map((b) => b.id)).size).toBe(2);
+      // El id que manda el editor se respeta; uno repetido (al partir un párrafo) se cambia en el segundo.
+      const [a, b] = first.map((x) => x.id);
+      await http().patch(url).set(auth()).send({ content: [{ id: a, type: 'p', text: 'uno' }, { id: a, type: 'p', text: 'mitad' }, { id: b, type: 'p', text: 'dos' }] }).expect(200);
+      const second = (await http().get(url).set(auth())).body.content as { id: string }[];
+      expect(second[0].id).toBe(a);
+      expect(second[1].id).not.toBe(a);
+      expect(second[2].id).toBe(b);
+      // Un id con caracteres raros o enorme no pasa.
+      await http().patch(url).set(auth()).send({ content: [{ id: '<script>', type: 'p', text: 'x' }] }).expect(400);
+      await http().patch(url).set(auth()).send({ content: [{ id: 'x'.repeat(40), type: 'p', text: 'x' }] }).expect(400);
+      // Una copia vieja sin ids: al restaurarla, los párrafos iguales recuperan el id que tenían.
+      const [version] = await db.insert(schema.chapterVersions)
+        .values({ chapterId: ch.body.id, revision: 1, title: 'Ids', content: [{ type: 'p', text: 'uno' }, { type: 'p', text: 'nuevo' }], words: 2, reason: 'sesion' })
+        .returning();
+      const restored = (await http().post(`${url}/versions/${version.id}/restore`).set(auth()).expect(200)).body.content as { id: string }[];
+      expect(restored[0].id).toBe(a);
+      expect(restored[1].id).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(restored[1].id).not.toBe(a);
+      await http().delete(url).set(auth()).expect(204);
+    });
+
+    it('no pisa lo guardado desde otro lado (revisión) y guarda historial', async () => {
+      const ch = await http().post('/stories/el-coro/chapters').set(auth()).send({ title: 'Versiones', content: [{ type: 'p', text: 'uno' }] }).expect(201);
+      const url = `/me/stories/el-coro/chapters/${ch.body.id}`;
+      const start = (await http().get(url).set(auth())).body.revision;
+      const a = await http().patch(url).set(auth()).send({ revision: start, content: [{ type: 'p', text: 'uno dos' }] }).expect(200);
+      expect(a.body.revision).toBe(start + 1);
+      // Otra pestaña guarda con la revisión vieja: no se pisa nada.
+      const clash = await http().patch(url).set(auth()).send({ revision: start, content: [{ type: 'p', text: 'otra pestaña' }] }).expect(409);
+      expect(clash.body.revision).toBe(start + 1);
+      expect((await http().get(url).set(auth())).body.content[0].text).toBe('uno dos');
+      // Guardar sin pisar a la otra pestaña: "quedarme con la mía" guarda copia de lo que reemplaza.
+      await http().patch(url).set(auth()).send({ revision: start + 1, keepVersion: true, content: [{ type: 'p', text: 'la mía' }] }).expect(200);
+      let list = (await http().get(`${url}/versions`).set(auth()).expect(200)).body;
+      expect(list).toMatchObject([{ reason: 'conflicto', revision: start + 1 }]);
+
+      // Sesión nueva (30 minutos sin guardar): se copia cómo estaba antes de empezar.
+      await db.update(schema.chapters).set({ updatedAt: new Date(Date.now() - 31 * 60_000) }).where(eq(schema.chapters.id, ch.body.id));
+      await http().patch(url).set(auth()).send({ content: [{ type: 'p', text: 'sesión nueva' }] }).expect(200);
+      await http().patch(url).set(auth()).send({ content: [{ type: 'p', text: 'sesión nueva, sigo' }] }).expect(200);
+      list = (await http().get(`${url}/versions`).set(auth())).body;
+      expect(list.map((v: { reason: string }) => v.reason)).toEqual(['sesion', 'conflicto']);
+
+      // Un borrado grande guarda copia antes, aunque sea en la misma sesión.
+      const big = Array.from({ length: 60 }, (_, i) => `p${i}`).join(' ');
+      await http().patch(url).set(auth()).send({ content: [{ type: 'p', text: big }] }).expect(200);
+      await http().patch(url).set(auth()).send({ content: [{ type: 'p', text: 'casi nada' }] }).expect(200);
+      list = (await http().get(`${url}/versions`).set(auth())).body;
+      expect(list[0]).toMatchObject({ reason: 'recorte', words: 60 });
+
+      // Restaurar vuelve a esa copia y antes guarda cómo estaba.
+      const restored = await http().post(`${url}/versions/${list[0].id}/restore`).set(auth()).expect(200);
+      expect(restored.body.content[0].text).toBe(big);
+      list = (await http().get(`${url}/versions`).set(auth())).body;
+      expect(list[0]).toMatchObject({ reason: 'restaurar' });
+      const one = await http().get(`${url}/versions/${list[0].id}`).set(auth()).expect(200);
+      expect(one.body.content[0].text).toBe('casi nada');
+
+      // Guardar aparte la propia (conflicto, eligiendo la otra) no cambia el capítulo.
+      await http().post(`${url}/versions`).set(auth()).send({ title: 'Mía', content: [{ type: 'p', text: 'copia aparte' }] }).expect(201);
+      expect((await http().get(url).set(auth())).body.content[0].text).toBe(big);
+
+      // Nadie más ve ni restaura el historial.
+      await http().get(`${url}/versions`).set(other()).expect(403);
+      await http().post(`${url}/versions/${list[0].id}/restore`).set(other()).expect(403);
+
+      // Tope: nunca más de 10 por capítulo.
+      for (let i = 0; i < 12; i++) await http().post(`${url}/versions`).set(auth()).send({ title: `c${i}`, content: [{ type: 'p', text: `c${i}` }] }).expect(201);
+      expect((await http().get(`${url}/versions`).set(auth())).body).toHaveLength(10);
+      await http().delete(url).set(auth()).expect(204);
+    });
+
     it('publica, programa y vuelve a borrador; quien lee cuenta solo lo publicado', async () => {
       const second = await http().post('/stories/el-coro/chapters').set(auth()).send({ title: 'Segundo', content: [{ type: 'p', text: 'B' }] }).expect(201);
       const third = await http().post('/stories/el-coro/chapters').set(auth()).send({ title: 'Tercero', content: [{ type: 'p', text: 'C' }] }).expect(201);
@@ -347,6 +464,24 @@ describe('Inkwell API', () => {
       expect(meta).toMatchObject({ format: 'webp', width: 800, height: 1200 });
       expect((await http().get('/stories/el-coro')).body.cover).toBe(res.body.cover);
       await http().delete('/me/stories/el-coro/cover').set(auth()).expect(200).expect({ cover: null });
+      expect(files.files.size).toBe(0);
+    });
+
+    it('el lomo: estilo validado, imagen propia que se usa al subirla y vuelve al color al quitarla', async () => {
+      await http().patch('/me/stories/el-coro').set(auth()).send({ spine: { source: 'portada', texture: 'tela', ornament: 'bandas' } }).expect(200);
+      expect((await http().get('/stories/el-coro')).body.spine).toEqual({ source: 'portada', texture: 'tela', ornament: 'bandas' });
+      await http().patch('/me/stories/el-coro').set(auth()).send({ spine: { source: 'color', texture: 'terciopelo', ornament: 'bandas' } }).expect(400);
+
+      const art = await sharp({ create: { width: 300, height: 1200, channels: 3, background: '#4B3B8F' } }).png().toBuffer();
+      await http().put('/me/stories/el-coro/spine').set(other()).attach('file', art, 'lomo.png').expect(403);
+      const res = await http().put('/me/stories/el-coro/spine').set(auth()).attach('file', art, 'lomo.png').expect(200);
+      expect(res.body.spine).toEqual({ source: 'imagen', texture: 'tela', ornament: 'bandas' });
+      const meta = await sharp(files.files.get(res.body.spineImage.replace('https://archivos.prueba/', ''))!).metadata();
+      expect(meta).toMatchObject({ format: 'webp', width: 200, height: 1000 });
+      expect((await http().get('/stories/el-coro')).body.spineImage).toBe(res.body.spineImage);
+
+      const off = await http().delete('/me/stories/el-coro/spine').set(auth()).expect(200);
+      expect(off.body).toEqual({ spineImage: null, spine: { source: 'color', texture: 'tela', ornament: 'bandas' } });
       expect(files.files.size).toBe(0);
     });
 
@@ -437,7 +572,7 @@ describe('Inkwell API', () => {
 
     it('dos personas pidiendo el mismo nombre a la vez: una lo obtiene y la otra recibe 409', async () => {
       const res = await Promise.all([beto, ana].map((t) => http().patch('/me').set('Authorization', `Bearer ${t}`).send({ handle: 'el.mismo' })));
-      expect(res.map((r) => r.status).sort()).toEqual([200, 409]);
+      expect(res.map((r) => r.status).sort((a, b) => a - b)).toEqual([200, 409]);
       await http().patch('/me').set('Authorization', `Bearer ${ana}`).send({ handle: 'ana.lee' }).expect(200);
     });
   });
@@ -733,6 +868,13 @@ describe('Inkwell API', () => {
       await http().get('/stories/edad-mas-18/chapters/1').set(as(adulta)).expect(200);
       await http().patch('/me').set(as(adulta)).send({ showMature: false }).expect(200);
       await http().get('/stories/edad-mas-18').set(as(adulta)).expect(404);
+    });
+
+    it('guarda los gustos de la bienvenida sin repetidos, son privados y rechaza los que no existen', async () => {
+      const me = (await http().patch('/me').set(as(adulta)).send({ interests: ['Romance', 'Fanfic', 'Romance', 'Coming of age'] }).expect(200)).body;
+      expect(me.interests).toEqual(['Romance', 'Fanfic', 'Coming of age']);
+      expect((await http().get(`/profiles/${me.handle}`).expect(200)).body).not.toHaveProperty('interests');
+      await http().patch('/me').set(as(adulta)).send({ interests: ['Vampiros'] }).expect(400);
     });
 
     it('la autora siempre ve lo suyo, aunque no le toque por edad', async () => {
