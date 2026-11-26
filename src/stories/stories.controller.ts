@@ -60,6 +60,14 @@ export class StoriesController {
     return this.stories.addChapter(user.id, slug, body);
   }
 
+  /** Sin caché: la respuesta depende de quien pregunta. */
+  @Get(':slug/chapters/:n/vote')
+  @UseGuards(AuthGuard)
+  @Header('Cache-Control', 'no-store')
+  myVote(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @Param('n', ParseIntPipe) n: number) {
+    return this.stories.getVote(user, slug, n);
+  }
+
   @Put(':slug/chapters/:n/vote')
   @UseGuards(AuthGuard)
   async vote(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @Param('n', ParseIntPipe) n: number) {

@@ -126,6 +126,17 @@ export class StoriesService {
     return { n, title: chapter.title, titleStyle: chapter.titleStyle, badge: chapter.badge, content: chapter.content, publishedAt: chapter.publishedAt, votes: c };
   }
 
+  /** Si quien lee ya votó este capítulo, y cuántos votos tiene. El lector lo pide al abrirse. */
+  async getVote(viewer: Viewer, slug: string, n: number) {
+    const story = await this.publicRow(slug, viewer);
+    const chapter = await this.liveChapter(story.id, n);
+    const [[mine], [{ c }]] = await Promise.all([
+      this.db.select({ userId: votes.userId }).from(votes).where(and(eq(votes.userId, viewer.id), eq(votes.chapterId, chapter.id))),
+      this.db.select({ c: count() }).from(votes).where(eq(votes.chapterId, chapter.id)),
+    ]);
+    return { voted: Boolean(mine), votes: c };
+  }
+
   async setVote(viewer: Viewer, slug: string, n: number, on: boolean) {
     const userId = viewer.id;
     const story = await this.publicRow(slug, viewer);
