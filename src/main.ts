@@ -1,6 +1,8 @@
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ENV, type Env } from './config/env.js';
+import { originChecker } from './common/origins.js';
+import { configureBody } from './http.js';
 
 // Carga .env en desarrollo. En Render las variables vienen del panel y no hay archivo.
 try {
@@ -17,7 +19,9 @@ async function bootstrap() {
   // Detrás del proxy de Render: así el límite de peticiones ve la IP de cada persona, no la del proxy.
   if (env.TRUST_PROXY) app.set('trust proxy', env.TRUST_PROXY);
   app.use(securityHeaders);
-  app.enableCors({ origin: env.CORS_ORIGINS.split(',').map((o) => o.trim()), credentials: true });
+  configureBody(app);
+  const allowed = originChecker(env);
+  app.enableCors({ origin: (origin, done) => done(null, allowed(origin)), credentials: true });
   app.enableShutdownHooks();
   await app.listen(env.PORT);
   console.log(`Inkwell API escuchando en http://localhost:${env.PORT}`);

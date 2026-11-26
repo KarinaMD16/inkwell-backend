@@ -18,6 +18,12 @@ const schema = z.object({
   /** Orígenes del frontend permitidos, separados por coma. Nunca "*": la sesión viaja en una cookie. */
   CORS_ORIGINS: z.string().default('http://localhost:3000')
     .refine((v) => !v.split(',').some((o) => o.trim() === '*'), 'CORS_ORIGINS no puede ser "*": lista los dominios de Inkwell'),
+  /**
+   * Solo en desarrollo, para probar en el teléfono: además de CORS_ORIGINS, acepta la web abierta desde
+   * la red de tu casa (http://192.168.x.x:3000 y parecidas). La API no arranca si está activado en producción.
+   */
+  ALLOW_LAN_ORIGINS: z.preprocess((v) => (v === '' ? undefined : typeof v === 'boolean' ? String(v) : v), z.enum(['0', '1', 'true', 'false']).default('0'))
+    .transform((v) => v === '1' || v === 'true'),
   /** Cookie HttpOnly con la sesión, la que pone el frontend (Next) al entrar. Debe llamarse igual allá. */
   AUTH_COOKIE: z.string().default('ink_at'),
   /** Servicio de cuentas de Supabase con permisos de administrador. Solo para eliminar cuentas. Nunca en el frontend. */
@@ -53,6 +59,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   if (!parsed.success) {
     const lines = parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`);
     throw new Error(`Configuración inválida. Revisa tu archivo .env:\n${lines.join('\n')}`);
+  }
+  if (parsed.data.ALLOW_LAN_ORIGINS && source.NODE_ENV === 'production') {
+    throw new Error('Configuración inválida: ALLOW_LAN_ORIGINS es solo para desarrollo. Quítalo del entorno de producción.');
   }
   return parsed.data;
 }

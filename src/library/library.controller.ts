@@ -23,7 +23,7 @@ export class LibraryController {
   @Get()
   list(@CurrentUser() user: AuthUser) {
     return this.db
-      .select({ slug: stories.slug, title: stories.title, author: profiles.handle, color: stories.color, ink: stories.ink, art: stories.art, cover: stories.coverUrl, chapter: library.chapter, updatedAt: library.updatedAt })
+      .select({ slug: stories.slug, title: stories.title, author: profiles.handle, color: stories.color, ink: stories.ink, art: stories.art, cover: stories.coverUrl, spine: stories.spine, spineImage: stories.spineUrl, chapter: library.chapter, updatedAt: library.updatedAt })
       .from(library)
       .innerJoin(stories, eq(library.storyId, stories.id))
       .innerJoin(profiles, eq(stories.authorId, profiles.id))
