@@ -315,6 +315,24 @@ export const comments = pgTable('comments', {
   check('comments_body_check', sql`char_length(${t.body}) <= 2000`),
 ]).enableRLS();
 
+/**
+ * Qué avisos quiere cada persona en Novedades (los interruptores de Ajustes) y hasta cuándo los leyó.
+ * Los avisos no se guardan uno por uno: se arman al pedirlos con lo que ya existe (capítulos, comentarios,
+ * seguidores; ver reading/notifications.service.ts). Lo posterior a `readAt` cuenta como no leído.
+ * Sin fila, valen los valores por defecto.
+ */
+export const notificationPrefs = pgTable('notification_prefs', {
+  userId: uuid('user_id').primaryKey().references(() => profiles.id, { onDelete: 'cascade' }),
+  /** Capítulos nuevos de historias de la repisa o de autores que sigue. */
+  chapters: boolean('chapters').notNull().default(true),
+  /** Respuestas a sus comentarios y comentarios en sus historias. */
+  replies: boolean('replies').notNull().default(true),
+  /** Seguidores nuevos. */
+  followers: boolean('followers').notNull().default(false),
+  readAt: timestamp('read_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}).enableRLS();
+
 export const READER_SPACINGS = ['justo', 'normal', 'amplio'] as const;
 export const READER_THEMES = ['claro', 'sepia', 'oscuro'] as const;
 export const READER_SIZE = { min: 15, max: 26 } as const;
