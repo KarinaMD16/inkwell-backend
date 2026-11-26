@@ -1,9 +1,9 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { and, asc, count, desc, eq, exists, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, exists, inArray, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { isUniqueViolation } from '../common/db-errors.js';
 import { DB, type Db } from '../db/db.module.js';
-import { LIST_LIMITS, readingListItems, readingLists, stories } from '../db/schema.js';
+import { LIST_LIMITS, profiles, readingListItems, readingLists, stories } from '../db/schema.js';
 import { StoriesService } from '../stories/stories.service.js';
 import { visibleTo, type Viewer } from '../visibility/visibility.js';
 
@@ -97,9 +97,16 @@ export class ListsService {
    */
   async get(viewer: Viewer | null, id: string) {
     if (!isUuid(id)) throw new NotFoundException(NOT_FOUND);
-    const [list] = await this.db.select().from(readingLists).where(eq(readingLists.id, id));
+    const [list] = await this.db
+      .select({
+        id: readingLists.id, userId: readingLists.userId, name: readingLists.name, isPublic: readingLists.isPublic, updatedAt: readingLists.updatedAt,
+        owner: { handle: profiles.handle, name: profiles.name, suspendedAt: profiles.suspendedAt },
+      })
+      .from(readingLists).innerJoin(profiles, eq(profiles.id, readingLists.userId))
+      .where(eq(readingLists.id, id));
     const mine = Boolean(viewer && list?.userId === viewer.id);
-    if (!list || (!mine && !list.isPublic)) throw new NotFoundException(NOT_FOUND);
+    // La de otra persona: solo si es pública y su cuenta no está suspendida (su perfil tampoco se ve).
+    if (!list || (!mine && (!list.isPublic || list.owner.suspendedAt))) throw new NotFoundException(NOT_FOUND);
 
     const order = await this.db.select({ storyId: readingListItems.storyId, slug: stories.slug }).from(readingListItems)
       .innerJoin(stories, eq(stories.id, readingListItems.storyId))
@@ -110,7 +117,28 @@ export class ListsService {
     const position = new Map(order.map((o, i) => [o.slug, i]));
     const ordered = [...cards].sort((a, b) => (position.get(a.slug) ?? 0) - (position.get(b.slug) ?? 0));
 
-    return { id: list.id, name: list.name, isPublic: list.isPublic, mine, updatedAt: list.updatedAt, stories: ordered };
+    return {
+      id: list.id, name: list.name, isPublic: list.isPublic, mine, updatedAt: list.updatedAt,
+      owner: { handle: list.owner.handle, name: list.owner.name }, stories: ordered,
+    };
+  }
+
+  /**
+   * Las listas públicas de un perfil (para su página). Las privadas nunca salen. El número de historias
+   * cuenta solo las que le tocan ver a quien mira, para que no delate las que no puede abrir.
+   */
+  async publicOf(viewer: Viewer | null, handle: string) {
+    const [owner] = await this.db.select({ id: profiles.id }).from(profiles)
+      .where(and(eq(profiles.handle, handle), isNull(profiles.suspendedAt)));
+    if (!owner) throw new NotFoundException('No encontramos ese perfil');
+    const visible = this.db.select({ c: count() }).from(readingListItems)
+      .innerJoin(stories, eq(stories.id, readingListItems.storyId))
+      .where(and(eq(readingListItems.listId, readingLists.id), visibleTo(this.db, viewer)));
+    return this.db
+      .select({ id: readingLists.id, name: readingLists.name, stories: sql<number>`(${visible})`.mapWith(Number), updatedAt: readingLists.updatedAt })
+      .from(readingLists)
+      .where(and(eq(readingLists.userId, owner.id), eq(readingLists.isPublic, true)))
+      .orderBy(desc(readingLists.updatedAt));
   }
 
   /** Agregar dos veces deja una sola copia (idempotente). Solo entra lo que puedes ver. */

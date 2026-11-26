@@ -15,6 +15,7 @@ import { HealthController } from './health/health.controller.js';
 import { LibraryController } from './library/library.controller.js';
 import { ListsController } from './reading/lists.controller.js';
 import { ListsService } from './reading/lists.service.js';
+import { PublicListsController } from './reading/public-lists.controller.js';
 import { ReadingPrefsController } from './reading/reading-prefs.controller.js';
 import { ReadingPrefsService } from './reading/reading-prefs.service.js';
 import { AccountsService } from './me/accounts.service.js';
@@ -42,7 +43,7 @@ import { S3Storage, STORAGE } from './storage/storage.js';
       }),
     }),
   ],
-  controllers: [HealthController, MeController, BlockedTagsController, ProfilesController, DiscoveryController, StoriesController, MyStoriesController, TagsController, LibraryController, ReadingPrefsController, ListsController, AdminController],
+  controllers: [HealthController, MeController, BlockedTagsController, ProfilesController, DiscoveryController, StoriesController, MyStoriesController, TagsController, LibraryController, ReadingPrefsController, ListsController, PublicListsController, AdminController],
   providers: [
     MeService,
     ReadingPrefsService,
