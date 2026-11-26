@@ -1,5 +1,5 @@
-import { Body, Controller, Delete, Get, HttpCode, Inject, NotFoundException, Param, Put, UseGuards } from '@nestjs/common';
-import { and, desc, eq } from 'drizzle-orm';
+import { Body, Controller, Delete, Get, HttpCode, Inject, NotFoundException, Param, Patch, Put, UseGuards } from '@nestjs/common';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { AuthGuard, CurrentUser } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.service.js';
@@ -10,6 +10,7 @@ import { MeService } from '../me/me.service.js';
 import { visibleTo } from '../visibility/visibility.js';
 
 const saveSchema = z.object({ chapter: z.number().int().min(1).default(1) });
+const progressSchema = z.object({ chapter: z.number().int().min(1) });
 
 /** La repisa de la persona: qué historias guardó y por qué capítulo va en cada una. */
 @Controller('me/library')
@@ -45,6 +46,21 @@ export class LibraryController {
       .values({ userId: user.id, storyId: story.id, chapter: body.chapter, updatedAt: now })
       .onConflictDoUpdate({ target: [library.userId, library.storyId], set: { chapter: body.chapter, updatedAt: now } });
     return { slug, chapter: body.chapter };
+  }
+
+  /**
+   * El lector avisa por qué capítulo vas. Solo cambia algo si la historia ya está en tu repisa:
+   * abrir un capítulo nunca la guarda sola (eso es solo con el botón "Poner en mi repisa").
+   */
+  @Patch(':slug')
+  async progress(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @Body(new ZodPipe(progressSchema)) body: z.infer<typeof progressSchema>) {
+    const story = this.db.select({ id: stories.id }).from(stories).where(eq(stories.slug, slug));
+    const updated = await this.db
+      .update(library)
+      .set({ chapter: body.chapter, updatedAt: new Date() })
+      .where(and(eq(library.userId, user.id), inArray(library.storyId, story)))
+      .returning({ chapter: library.chapter });
+    return { slug, chapter: body.chapter, saved: updated.length > 0 };
   }
 
   @Delete(':slug')

@@ -17,10 +17,8 @@
 - Verificación en dos pasos (2FA) con app de autenticación, opcional en Ajustes.
 
 ## Lectura y lector
-- **Votar:** el botón siempre empieza en "Votar" aunque ya hayas votado (falta traer el estado de la API), no muestra espera mientras responde y, si la API falla, no avisa nada.
-- **Compartir:** usa `navigator.share`, que no existe en la mayoría de navegadores de escritorio; ahí el botón no hace nada. Debe copiar el enlace y avisar "Enlace copiado".
-- **Repisa:** el botón no muestra espera mientras guarda, y el error ("No se pudo guardar") no dice por qué.
-- Abrir un capítulo con sesión guarda la historia en la repisa automáticamente (PUT `/me/library`). Decidir si es lo que se quiere o si solo debe actualizar el progreso de las que ya están guardadas.
+- **Votar, compartir y repisa (listo):** el voto trae su estado real (`GET /stories/:slug/chapters/:n/vote`), muestra espera y avisa si falla; compartir copia el enlace y avisa "Enlace copiado" donde no hay menú del sistema (`inkwell/src/lib/share.ts`); el botón de la repisa muestra espera y explica el motivo del error.
+- **Repisa (decidido):** abrir un capítulo ya no guarda la historia en la repisa. A la repisa solo se entra con el botón "Poner en mi repisa"; el lector solo actualiza el capítulo por el que vas si la historia ya estaba guardada (`PATCH /me/library/:slug`).
 
 ## Comentarios
 - **Id por párrafo (listo, punto de contacto con comentarios):** cada bloque del capítulo (párrafo o plantilla) trae `id`, único dentro del capítulo y estable al editar, mover, deshacer y restaurar versiones (ver `inkwell-backend/src/stories/block-ids.ts` y `inkwell/src/lib/editorSchema.ts`). Los comentarios por párrafo se anclan a `(chapter_id, block_id)`. Si el párrafo se borra, el id desaparece del capítulo: decidir qué pasa con sus comentarios (p. ej., mostrarlos como "comentarios del capítulo"). El contador `comments` del tipo `Block` en la web no viene de la API: debe salir de la tabla de comentarios.
