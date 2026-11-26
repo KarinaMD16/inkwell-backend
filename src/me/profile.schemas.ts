@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { INTERESTS } from '../stories/stories.schemas.js';
 
 /** Edad mínima para tener cuenta. Debe coincidir con MIN_AGE del frontend. */
 export const MIN_AGE = 13;
@@ -70,6 +71,8 @@ export const updateProfileSchema = z
     birthdate: birthdateSchema,
     /** Ver historias +18. Solo para mayores de edad (ver MeService.update). */
     showMature: z.boolean(),
+    /** Gustos de lectura, sin repetidos. */
+    interests: z.array(z.enum(INTERESTS)).max(INTERESTS.length).transform((list) => [...new Set(list)]),
   })
   .partial()
   .strict();

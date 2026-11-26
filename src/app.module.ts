@@ -19,6 +19,7 @@ import { MeService } from './me/me.service.js';
 import { ProfilesController } from './me/profiles.controller.js';
 import { MyStoriesController } from './stories/my-stories.controller.js';
 import { StoriesController } from './stories/stories.controller.js';
+import { ChapterVersionsService } from './stories/chapter-versions.service.js';
 import { StoriesService } from './stories/stories.service.js';
 import { S3Storage, STORAGE } from './storage/storage.js';
 
@@ -41,6 +42,7 @@ import { S3Storage, STORAGE } from './storage/storage.js';
   providers: [
     MeService,
     StoriesService,
+    ChapterVersionsService,
     DiscoveryService,
     AccountsService,
     AdminService,

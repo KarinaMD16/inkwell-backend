@@ -7,6 +7,8 @@ export const IMAGE_KINDS = {
   banner: { width: 1500, height: 500, quality: 80 },
   /** Portada de una historia, 2:3 como la tapa del libro. */
   cover: { width: 800, height: 1200, quality: 82 },
+  /** Lomo de una historia: angosto y alto, como en la repisa. */
+  spine: { width: 200, height: 1000, quality: 82 },
 } as const;
 /** Las dos imágenes de un perfil. */
 export type ImageKind = 'avatar' | 'banner';

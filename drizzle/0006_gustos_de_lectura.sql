@@ -1,0 +1,1 @@
+ALTER TABLE "profiles" ADD COLUMN "interests" text[] DEFAULT '{}'::text[] NOT NULL;

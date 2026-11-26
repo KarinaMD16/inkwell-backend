@@ -10,13 +10,14 @@ import type {
   ChapterOrder, CreateChapter, CreateStory, PublishChapter, UpdateChapter, UpdateStory,
 } from './stories.schemas.js';
 import { isLive, visibleTo, type Viewer } from '../visibility/visibility.js';
+import { keepVersion, reasonToKeep } from './chapter-versions.js';
 import { recount, saveTags, tagIdsOf, type Tagged, type Tx } from './tagging.js';
 
 type StoryRow = typeof stories.$inferSelect;
 
 const stateOf = (publishedAt: Date | null) => (!publishedAt ? 'borrador' : publishedAt > new Date() ? 'programado' : 'publicado');
 
-function countWords(content: Block[]): number {
+export function countWords(content: Block[]): number {
   const words = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
   return content.reduce((n, b) => n + (b.type === 'chat' ? b.messages.reduce((m, msg) => m + words(msg.text), 0) : words(b.text)), 0);
 }
@@ -59,7 +60,8 @@ export class StoriesService {
   private columns() {
     return {
       slug: stories.slug, title: stories.title, author: profiles.handle, tagline: stories.tagline, synopsis: stories.synopsis,
-      cover: stories.coverUrl, color: stories.color, ink: stories.ink, art: stories.art, kind: stories.kind, genre: stories.genre,
+      cover: stories.coverUrl, color: stories.color, ink: stories.ink, art: stories.art, spine: stories.spine, spineImage: stories.spineUrl,
+      kind: stories.kind, genre: stories.genre,
       subgenres: stories.subgenres, fandom: stories.fandom, relation: stories.relation, characters: stories.characters,
       tropes: stories.tropes, warnings: stories.warnings, tags: stories.freeTags, rating: stories.rating, status: stories.status,
       format: stories.format, license: stories.license, reads: stories.reads,
@@ -201,7 +203,7 @@ export class StoriesService {
     await this.db.transaction(async (tx) => {
       await tx.update(stories).set({
         title: next.title, tagline: next.tagline, synopsis: next.synopsis, kind: next.kind, genre: next.genre, rating: next.rating,
-        status: next.status, license: next.license, format: next.format, color: next.color, ink: next.ink, art: next.art,
+        status: next.status, license: next.license, format: next.format, color: next.color, ink: next.ink, art: next.art, spine: next.spine,
         published: next.published, updatedAt: new Date(),
       }).where(eq(stories.id, story.id));
       // También recuenta los usos: cubre el cambio de etiquetas y el de visibilidad.
@@ -218,14 +220,13 @@ export class StoriesService {
       await recount(tx, used);
     });
     await this.forget(story.coverUrl);
+    await this.forget(story.spineUrl);
   }
 
   /** Sube una portada nueva (queda en 800×1200 WebP) y borra la anterior. */
   async setCover(userId: string, slug: string, file: Buffer) {
     const story = await this.owned(userId, slug);
-    const webp = await processImage(file, 'cover');
-    const key = `covers/${story.id}/${Date.now().toString(36)}-${randomBytes(4).toString('hex')}.webp`;
-    const url = await this.storage.put(key, webp, 'image/webp');
+    const url = await this.storeImage(story.id, 'cover', file);
     await this.db.update(stories).set({ coverUrl: url, updatedAt: new Date() }).where(eq(stories.id, story.id));
     await this.forget(story.coverUrl);
     return { cover: url };
@@ -236,6 +237,32 @@ export class StoriesService {
     await this.db.update(stories).set({ coverUrl: null, updatedAt: new Date() }).where(eq(stories.id, story.id));
     await this.forget(story.coverUrl);
     return { cover: null };
+  }
+
+  /** Imagen propia del lomo: al subirla, el lomo pasa a usarla. */
+  async setSpine(userId: string, slug: string, file: Buffer) {
+    const story = await this.owned(userId, slug);
+    const url = await this.storeImage(story.id, 'spine', file);
+    const spine = { ...story.spine, source: 'imagen' as const };
+    await this.db.update(stories).set({ spineUrl: url, spine, updatedAt: new Date() }).where(eq(stories.id, story.id));
+    await this.forget(story.spineUrl);
+    return { spineImage: url, spine };
+  }
+
+  /** Quitar la imagen del lomo: si la estaba usando, vuelve al color. */
+  async removeSpine(userId: string, slug: string) {
+    const story = await this.owned(userId, slug);
+    const spine = story.spine.source === 'imagen' ? { ...story.spine, source: 'color' as const } : story.spine;
+    await this.db.update(stories).set({ spineUrl: null, spine, updatedAt: new Date() }).where(eq(stories.id, story.id));
+    await this.forget(story.spineUrl);
+    return { spineImage: null, spine };
+  }
+
+  /** Procesa la imagen (ver processImage) y la guarda con un nombre propio, nunca el del archivo. */
+  private async storeImage(storyId: string, kind: 'cover' | 'spine', file: Buffer) {
+    const webp = await processImage(file, kind);
+    const key = `${kind === 'cover' ? 'covers' : 'spines'}/${storyId}/${Date.now().toString(36)}-${randomBytes(4).toString('hex')}.webp`;
+    return this.storage.put(key, webp, 'image/webp');
   }
 
   /** Borrar la imagen vieja es limpieza: si falla, la historia ya quedó bien y solo se avisa en el log. */
@@ -257,7 +284,18 @@ export class StoriesService {
   }
 
   private chapterView(c: typeof chapters.$inferSelect) {
-    return { id: c.id, n: c.n, title: c.title, badge: c.badge, words: c.words, publishedAt: c.publishedAt, updatedAt: c.updatedAt, state: stateOf(c.publishedAt) };
+    return { id: c.id, n: c.n, title: c.title, badge: c.badge, words: c.words, publishedAt: c.publishedAt, updatedAt: c.updatedAt, revision: c.revision, state: stateOf(c.publishedAt) };
+  }
+
+  /** El capítulo completo, como lo abre el editor. */
+  fullChapter(c: typeof chapters.$inferSelect) {
+    return { ...this.chapterView(c), titleStyle: c.titleStyle, content: c.content };
+  }
+
+  /** La historia (si es tuya) y uno de sus capítulos. Lo usa también el historial de versiones. */
+  async ownedChapter(userId: string, slug: string, id: string) {
+    const story = await this.owned(userId, slug);
+    return { story, chapter: await this.chapterOf(story, id) };
   }
 
   /** Publicar algo saca la historia a la luz: sin esto quedaría invisible. */
@@ -268,7 +306,7 @@ export class StoriesService {
 
   async getMyChapter(userId: string, slug: string, id: string) {
     const chapter = await this.chapterOf(await this.owned(userId, slug), id);
-    return { ...this.chapterView(chapter), titleStyle: chapter.titleStyle, content: chapter.content };
+    return this.fullChapter(chapter);
   }
 
   async addChapter(userId: string, slug: string, input: CreateChapter) {
@@ -288,15 +326,35 @@ export class StoriesService {
     });
   }
 
-  /** Guarda el capítulo tal como está. Si ya es público, los cambios se ven de inmediato. */
-  async updateChapter(userId: string, slug: string, id: string, patch: UpdateChapter) {
+  /**
+   * Guarda el capítulo tal como está. Si ya es público, los cambios se ven de inmediato.
+   * Todo en una transacción, con el capítulo bloqueado mientras tanto:
+   * - con `revision`, si otra pestaña u otro dispositivo guardó antes, no se pisa nada (409);
+   * - antes de reemplazar, se guarda una copia en el historial si toca (ver chapter-versions.ts);
+   * - la revisión sube en 1 y la historia queda como actualizada.
+   */
+  async updateChapter(userId: string, slug: string, id: string, input: UpdateChapter) {
     const story = await this.owned(userId, slug);
-    await this.chapterOf(story, id);
+    const { revision, keepVersion: forceCopy, ...patch } = input;
     const now = new Date();
-    const [saved] = await this.db.update(chapters)
-      .set({ ...patch, ...(patch.content ? { words: countWords(patch.content) } : {}), updatedAt: now })
-      .where(eq(chapters.id, id)).returning();
-    await this.db.update(stories).set({ updatedAt: now }).where(eq(stories.id, story.id));
+    const saved = await this.db.transaction(async (tx) => {
+      const [current] = await tx.select().from(chapters).where(and(eq(chapters.id, id), eq(chapters.storyId, story.id))).for('update');
+      if (!current) throw new NotFoundException('No encontramos ese capítulo');
+      if (revision !== undefined && revision !== current.revision) {
+        throw new ConflictException({
+          statusCode: 409, revision: current.revision,
+          message: 'Este capítulo se guardó desde otra pestaña o dispositivo. No guardamos encima para no perder nada.',
+        });
+      }
+      const words = patch.content ? countWords(patch.content) : current.words;
+      const reason = forceCopy ? 'conflicto' : reasonToKeep(current, words, now);
+      if (reason) await keepVersion(tx, current, reason, now);
+      const [row] = await tx.update(chapters)
+        .set({ ...patch, words, revision: current.revision + 1, updatedAt: now })
+        .where(eq(chapters.id, id)).returning();
+      await tx.update(stories).set({ updatedAt: now }).where(eq(stories.id, story.id));
+      return row;
+    });
     return this.chapterView(saved);
   }
 
@@ -308,6 +366,8 @@ export class StoriesService {
     // Volver a publicar algo que ya está publicado no le cambia la fecha.
     const publishedAt = input.at ?? (chapter.publishedAt && chapter.publishedAt <= now ? chapter.publishedAt : now);
     return this.db.transaction(async (tx) => {
+      // Lo que se publica queda en el historial: siempre se puede volver a "como estaba al publicar".
+      if (chapter.content.length) await keepVersion(tx, chapter, 'publicar', now);
       const [saved] = await tx.update(chapters).set({ publishedAt }).where(eq(chapters.id, id)).returning();
       await this.reveal(tx, story);
       return this.chapterView(saved);

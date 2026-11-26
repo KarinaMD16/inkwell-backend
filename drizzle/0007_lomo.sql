@@ -1,0 +1,2 @@
+ALTER TABLE "stories" ADD COLUMN "spine" jsonb DEFAULT '{"source":"color","texture":"lisa","ornament":"ninguno"}'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "stories" ADD COLUMN "spine_url" text;

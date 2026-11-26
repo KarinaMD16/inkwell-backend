@@ -23,6 +23,7 @@
 - Abrir un capítulo con sesión guarda la historia en la repisa automáticamente (PUT `/me/library`). Decidir si es lo que se quiere o si solo debe actualizar el progreso de las que ya están guardadas.
 
 ## Comentarios
+- **Id por párrafo (listo, punto de contacto con comentarios):** cada bloque del capítulo (párrafo o plantilla) trae `id`, único dentro del capítulo y estable al editar, mover, deshacer y restaurar versiones (ver `inkwell-backend/src/stories/block-ids.ts` y `inkwell/src/lib/editorSchema.ts`). Los comentarios por párrafo se anclan a `(chapter_id, block_id)`. Si el párrafo se borra, el id desaparece del capítulo: decidir qué pasa con sus comentarios (p. ej., mostrarlos como "comentarios del capítulo"). El contador `comments` del tipo `Block` en la web no viene de la API: debe salir de la tabla de comentarios.
 - "Comentar" y el contador de comentarios por párrafo mandan a `/registro` aunque ya tengas sesión. Se arregla cuando existan los comentarios.
 
 ## Explorar y búsqueda

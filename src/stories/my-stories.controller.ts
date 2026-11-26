@@ -5,12 +5,14 @@ import type { AuthUser } from '../auth/auth.service.js';
 import { ZodPipe } from '../common/zod.pipe.js';
 import { need, upload, type UploadedImage } from '../storage/upload.js';
 import {
-  orderSchema, publishSchema, updateChapterSchema, updateStorySchema,
-  type ChapterOrder, type PublishChapter, type UpdateChapter, type UpdateStory,
+  orderSchema, publishSchema, updateChapterSchema, updateStorySchema, versionCopySchema,
+  type ChapterOrder, type PublishChapter, type UpdateChapter, type UpdateStory, type VersionCopy,
 } from './stories.schemas.js';
+import { ChapterVersionsService } from './chapter-versions.service.js';
 import { StoriesService } from './stories.service.js';
 
 const Id = () => Param('id', new ParseUUIDPipe());
+const VersionId = () => Param('versionId', new ParseUUIDPipe());
 
 /**
  * El lado de quien escribe: gestionar sus historias y capítulos, borradores incluidos.
@@ -19,7 +21,10 @@ const Id = () => Param('id', new ParseUUIDPipe());
 @Controller('me/stories')
 @UseGuards(AuthGuard)
 export class MyStoriesController {
-  constructor(@Inject(StoriesService) private readonly stories: StoriesService) {}
+  constructor(
+    @Inject(StoriesService) private readonly stories: StoriesService,
+    @Inject(ChapterVersionsService) private readonly versions: ChapterVersionsService,
+  ) {}
 
   /** Tus historias, incluidas las que aún no publicaste. */
   @Get()
@@ -57,6 +62,18 @@ export class MyStoriesController {
     return this.stories.removeCover(user.id, slug);
   }
 
+  @Put(':slug/spine')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @upload()
+  setSpine(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @UploadedFile() file?: UploadedImage) {
+    return this.stories.setSpine(user.id, slug, need(file));
+  }
+
+  @Delete(':slug/spine')
+  removeSpine(@CurrentUser() user: AuthUser, @Param('slug') slug: string) {
+    return this.stories.removeSpine(user.id, slug);
+  }
+
   // ----- capítulos: se identifican por id, porque el número cambia al reordenar -----
 
   @Put(':slug/chapters/order')
@@ -85,6 +102,32 @@ export class MyStoriesController {
   @HttpCode(200)
   unpublish(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @Id() id: string) {
     return this.stories.unpublishChapter(user.id, slug, id);
+  }
+
+  // ----- historial de versiones de un capítulo -----
+
+  @Get(':slug/chapters/:id/versions')
+  listVersions(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @Id() id: string) {
+    return this.versions.list(user.id, slug, id);
+  }
+
+  @Get(':slug/chapters/:id/versions/:versionId')
+  version(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @Id() id: string, @VersionId() versionId: string) {
+    return this.versions.get(user.id, slug, id, versionId);
+  }
+
+  /** Vuelve el capítulo a esa versión (antes guarda cómo estaba). */
+  @Post(':slug/chapters/:id/versions/:versionId/restore')
+  @HttpCode(200)
+  restore(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @Id() id: string, @VersionId() versionId: string) {
+    return this.versions.restore(user.id, slug, id, versionId);
+  }
+
+  /** Guarda aparte una versión sin aplicarla (la propia, al elegir la otra en un conflicto). */
+  @Post(':slug/chapters/:id/versions')
+  @HttpCode(201)
+  saveCopy(@CurrentUser() user: AuthUser, @Param('slug') slug: string, @Id() id: string, @Body(new ZodPipe(versionCopySchema)) body: VersionCopy) {
+    return this.versions.saveCopy(user.id, slug, id, body);
   }
 
   @Delete(':slug/chapters/:id')
