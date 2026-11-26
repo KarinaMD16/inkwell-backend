@@ -85,6 +85,13 @@
       "when": 1795661684564,
       "tag": "0011_parrafo_en_la_repisa",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795662992183,
+      "tag": "0012_listas_de_lectura",
+      "breakpoints": true
     }
   ]
 }

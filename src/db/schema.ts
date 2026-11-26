@@ -244,6 +244,37 @@ export const votes = pgTable('votes', {
   createdAt,
 }, (t) => [primaryKey({ columns: [t.userId, t.chapterId] })]).enableRLS();
 
+/** Límites de las listas de lectura (regla 7: textos con largo máximo; y que nadie llene la base). */
+export const LIST_LIMITS = { name: 60, perUser: 50, stories: 500 } as const;
+
+/**
+ * Listas de lectura que arma cada persona ("Para el verano", "Mis enemies to lovers"). Una historia
+ * puede estar en varias, aunque no esté en la repisa. Privadas por defecto: una pública la puede ver
+ * cualquiera con el enlace, pero cada quien solo ve las historias que le tocan por su edad.
+ */
+export const readingLists = pgTable('reading_lists', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  userId: uuid('user_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  isPublic: boolean('is_public').notNull().default(false),
+  createdAt,
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  // Dos listas tuyas no pueden llamarse igual (sin importar mayúsculas): así un doble clic en "Crear" no duplica.
+  uniqueIndex('reading_lists_user_name').on(t.userId, sql`lower(${t.name})`),
+  check('reading_lists_name_check', sql`char_length(${t.name}) between 1 and 60`),
+]).enableRLS();
+
+/** Qué historias tiene cada lista, en el orden en que se agregaron. */
+export const readingListItems = pgTable('reading_list_items', {
+  listId: uuid('list_id').notNull().references(() => readingLists.id, { onDelete: 'cascade' }),
+  storyId: uuid('story_id').notNull().references(() => stories.id, { onDelete: 'cascade' }),
+  addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ columns: [t.listId, t.storyId] }),
+  index('reading_list_items_story').on(t.storyId),
+]).enableRLS();
+
 export const READER_SPACINGS = ['justo', 'normal', 'amplio'] as const;
 export const READER_THEMES = ['claro', 'sepia', 'oscuro'] as const;
 export const READER_SIZE = { min: 15, max: 26 } as const;
