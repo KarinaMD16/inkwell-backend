@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
-  boolean, check, date, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid,
+  type AnyPgColumn, boolean, check, date, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid,
 } from 'drizzle-orm/pg-core';
 
 /**
@@ -229,6 +229,12 @@ export const library = pgTable('library', {
   userId: uuid('user_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
   storyId: uuid('story_id').notNull().references(() => stories.id, { onDelete: 'cascade' }),
   chapter: integer('chapter').notNull().default(1),
+  /**
+   * El párrafo (id de bloque, ver stories/block-ids.ts) por el que iba dentro de `chapter`, para
+   * "Seguir donde lo dejé". null: el principio del capítulo. Si la autora borra ese párrafo, el
+   * lector simplemente no lo encuentra y abre desde arriba.
+   */
+  blockId: text('block_id'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({ columns: [t.userId, t.storyId] })]).enableRLS();
 
@@ -237,6 +243,118 @@ export const votes = pgTable('votes', {
   chapterId: uuid('chapter_id').notNull().references(() => chapters.id, { onDelete: 'cascade' }),
   createdAt,
 }, (t) => [primaryKey({ columns: [t.userId, t.chapterId] })]).enableRLS();
+
+/** Límites de las listas de lectura (regla 7: textos con largo máximo; y que nadie llene la base). */
+export const LIST_LIMITS = { name: 60, perUser: 50, stories: 500 } as const;
+
+/**
+ * Listas de lectura que arma cada persona ("Para el verano", "Mis enemies to lovers"). Una historia
+ * puede estar en varias, aunque no esté en la repisa. Privadas por defecto: una pública la puede ver
+ * cualquiera con el enlace, pero cada quien solo ve las historias que le tocan por su edad.
+ */
+export const readingLists = pgTable('reading_lists', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  userId: uuid('user_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  isPublic: boolean('is_public').notNull().default(false),
+  createdAt,
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  // Dos listas tuyas no pueden llamarse igual (sin importar mayúsculas): así un doble clic en "Crear" no duplica.
+  uniqueIndex('reading_lists_user_name').on(t.userId, sql`lower(${t.name})`),
+  check('reading_lists_name_check', sql`char_length(${t.name}) between 1 and 60`),
+]).enableRLS();
+
+/** Qué historias tiene cada lista, en el orden en que se agregaron. */
+export const readingListItems = pgTable('reading_list_items', {
+  listId: uuid('list_id').notNull().references(() => readingLists.id, { onDelete: 'cascade' }),
+  storyId: uuid('story_id').notNull().references(() => stories.id, { onDelete: 'cascade' }),
+  addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ columns: [t.listId, t.storyId] }),
+  index('reading_list_items_story').on(t.storyId),
+]).enableRLS();
+
+/**
+ * Quién sigue a quién. Seguir a una autora es lo que, más adelante, hace llegar el aviso de
+ * "capítulo nuevo". Nadie se sigue a sí mismo.
+ */
+export const follows = pgTable('follows', {
+  followerId: uuid('follower_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  followedId: uuid('followed_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  createdAt,
+}, (t) => [
+  primaryKey({ columns: [t.followerId, t.followedId] }),
+  // Para contar seguidores y, después, avisarles: se busca por a quién siguen.
+  index('follows_followed').on(t.followedId),
+  check('follows_not_self', sql`${t.followerId} <> ${t.followedId}`),
+]).enableRLS();
+
+/** Largo máximo de un comentario (regla 7). */
+export const COMMENT_MAX = 2000;
+
+/**
+ * Comentarios de un capítulo. Con `blockId` es un comentario de párrafo (el id estable del bloque,
+ * ver stories/block-ids.ts); sin él, del capítulo entero. Las respuestas cuelgan de un comentario
+ * principal (`parentId`), en un solo nivel. Un comentario que tiene respuestas no se borra de la base:
+ * se vacía y se marca (`deletedAt`) para que la conversación siga teniendo sentido.
+ */
+export const comments = pgTable('comments', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  chapterId: uuid('chapter_id').notNull().references(() => chapters.id, { onDelete: 'cascade' }),
+  authorId: uuid('author_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  parentId: uuid('parent_id').references((): AnyPgColumn => comments.id, { onDelete: 'cascade' }),
+  blockId: text('block_id'),
+  body: text('body').notNull(),
+  createdAt,
+  editedAt: timestamp('edited_at', { withTimezone: true }),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+}, (t) => [
+  index('comments_chapter').on(t.chapterId, t.createdAt),
+  index('comments_parent').on(t.parentId),
+  check('comments_body_check', sql`char_length(${t.body}) <= 2000`),
+]).enableRLS();
+
+/**
+ * Qué avisos quiere cada persona en Novedades (los interruptores de Ajustes) y hasta cuándo los leyó.
+ * Los avisos no se guardan uno por uno: se arman al pedirlos con lo que ya existe (capítulos, comentarios,
+ * seguidores; ver reading/notifications.service.ts). Lo posterior a `readAt` cuenta como no leído.
+ * Sin fila, valen los valores por defecto.
+ */
+export const notificationPrefs = pgTable('notification_prefs', {
+  userId: uuid('user_id').primaryKey().references(() => profiles.id, { onDelete: 'cascade' }),
+  /** Capítulos nuevos de historias de la repisa o de autores que sigue. */
+  chapters: boolean('chapters').notNull().default(true),
+  /** Respuestas a sus comentarios y comentarios en sus historias. */
+  replies: boolean('replies').notNull().default(true),
+  /** Seguidores nuevos. */
+  followers: boolean('followers').notNull().default(false),
+  readAt: timestamp('read_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}).enableRLS();
+
+export const READER_SPACINGS = ['justo', 'normal', 'amplio'] as const;
+export const READER_THEMES = ['claro', 'sepia', 'oscuro'] as const;
+export const READER_SIZE = { min: 15, max: 26 } as const;
+
+/**
+ * Cómo le gusta leer a cada persona (los ajustes "Aa" del lector), para que se vean igual en
+ * todos sus dispositivos. Una fila por cuenta; sin fila, el lector usa sus valores por defecto.
+ */
+export const readingPrefs = pgTable('reading_prefs', {
+  userId: uuid('user_id').primaryKey().references(() => profiles.id, { onDelete: 'cascade' }),
+  /** Tamaño de la letra del capítulo, en px. */
+  size: integer('size').notNull().default(19),
+  /** true: Literata (con serifa); false: la letra de la interfaz. */
+  serif: boolean('serif').notNull().default(true),
+  spacing: text('spacing').$type<(typeof READER_SPACINGS)[number]>().notNull().default('normal'),
+  theme: text('theme').$type<(typeof READER_THEMES)[number]>().notNull().default('claro'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  check('reading_prefs_size_check', sql`${t.size} between 15 and 26`),
+  check('reading_prefs_spacing_check', sql`${t.spacing} in ('justo', 'normal', 'amplio')`),
+  check('reading_prefs_theme_check', sql`${t.theme} in ('claro', 'sepia', 'oscuro')`),
+]).enableRLS();
 
 /**
  * Lo que hizo moderación y administración, para poder revisarlo después. `target` es el id del
